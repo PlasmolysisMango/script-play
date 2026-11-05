@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>剧本杀 · AI 同局</title>
+    <script>
+      // Apply the saved theme before the first paint so the page never flashes
+      // the wrong palette. Kept inline: the bundle is exactly what may be slow.
+      ;(function () {
+        var themes = ['night', 'light', 'paper', 'forest']
+        var theme = 'night'
+        try {
+          var saved = localStorage.getItem('script-play.theme')
+          if (themes.indexOf(saved) >= 0) theme = saved
+          else if (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) theme = 'light'
+        } catch (e) {}
+        document.documentElement.setAttribute('data-theme', theme)
+        document.documentElement.style.colorScheme = theme === 'night' || theme === 'forest' ? 'dark' : 'light'
+      })()
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <noscript>
+      <p style="font-family: system-ui, sans-serif; padding: 24px">这个页面需要 JavaScript 才能运行，请在浏览器里开启后刷新。</p>
+    </noscript>
+    <div id="boot-fallback" hidden style="font-family: system-ui, sans-serif; max-width: 520px; margin: 15vh auto; padding: 24px; border-radius: 12px; background: #1b1f2a; color: #e8ecf4; line-height: 1.6">
+      <h1 style="margin: 0 0 8px; font-size: 18px">页面没能加载完成</h1>
+      <p id="boot-reason" style="margin: 0 0 12px; color: #a9b3c6">前端脚本没有执行。最常见的原因是浏览器缓存了旧的资源文件。</p>
+      <p style="margin: 0 0 16px; color: #a9b3c6">请按 <strong>Ctrl / Cmd + Shift + R</strong> 强制刷新；仍不行就点下面的按钮。</p>
+      <button onclick="location.reload()" style="padding: 8px 16px; border: 0; border-radius: 8px; background: #3b82f6; color: #fff; font-size: 14px; cursor: pointer">重新加载</button>
+    </div>
+    <script>
+      // A stale or blocked script tag leaves #root empty and the page looks black.
+      // Say so instead of showing nothing, and keep the styling inline because the
+      // stylesheet may be the very asset that failed.
+      ;(function () {
+        var shown = false
+        function showBootError(reason) {
+          if (shown) return
+          var root = document.getElementById('root')
+          if (root && root.childElementCount > 0) return
+          shown = true
+          var reasonEl = document.getElementById('boot-reason')
+          if (reasonEl && reason) reasonEl.textContent = reason
+          var box = document.getElementById('boot-fallback')
+          if (box) box.hidden = false
+        }
+        window.addEventListener('error', function (e) {
+          if (e && e.target && e.target.tagName === 'SCRIPT') {
+            showBootError('前端脚本加载失败（' + (e.target.src || '未知文件') + '），可能是缓存了旧版本。')
+          }
+        }, true)
+        setTimeout(function () { showBootError('') }, 8000)
+      })()
+    </script>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

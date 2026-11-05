@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+    branches: ["main", "master"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  server:
+    name: Go vet & test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+      - name: gofmt check
+        run: test -z "$(gofmt -l ./cmd ./internal)"
+      - name: go vet
+        run: go vet ./...
+      - name: go test
+        run: go test -race -count=1 ./...
+      - name: build
+        run: go build -o bin/script-play ./cmd/server
+
+  web:
+    name: Web typecheck, test & build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: install
+        run: npm ci
+      - name: typecheck
+        run: npx tsc --noEmit
+      - name: unit tests
+        run: npx vitest run
+      - name: build
+        run: npm run build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web-dist
+          path: web/dist
+          if-no-files-found: error
+
+  e2e:
+    name: Mock game end-to-end
+    runs-on: ubuntu-latest
+    needs: [server]
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+      - name: full mock game
+        run: >
+          go test -count=1
+          -run 'TestActorRunsFullGameWithAgents|TestSpeechDuringSearchIsKept|TestTextImportJob|TestStartTextSurvivesTheRequestContext|TestMockScriptJSON|TestFullGameOverRESTAndWebSocket|TestGameSnapshotNeverLeaksTruthToAPlayerSocket|TestSeatTicketBindsWebSocketToOneSeat|TestLateJoinerBecomesASpectatorWithoutPrivateData|TestPublishedScriptForksIntoEditableDraft|TestFinishedGameFreesItsSlot'
+          ./internal/engine ./internal/importer ./internal/llm ./internal/httpapi ./internal/rooms

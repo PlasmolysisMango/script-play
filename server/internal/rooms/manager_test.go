@@ -1,0 +1,126 @@
+package rooms_test
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	"script-play/internal/config"
+	"script-play/internal/domain"
+	"script-play/internal/llm"
+	"script-play/internal/realtime"
+	"script-play/internal/rooms"
+	"script-play/internal/store"
+)
+
+// A finished game must not keep its SP_MAX_ROOMS slot: the actor is dropped as
+// soon as the game ends and the room record flips to finished, so a long-lived
+// server can keep hosting new games.
+func TestFinishedGameFreesItsSlot(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(dir)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	sc := &domain.Script{
+		SchemaVersion: 1,
+		Meta:          domain.Meta{Title: "两阶段测试本", PlayerCount: domain.CountRange{Min: 2, Max: 2}},
+		Roles:         []domain.Role{{ID: "r1", Name: "甲"}, {ID: "r2", Name: "乙"}},
+		Phases: []domain.Phase{
+			{ID: "p1", Type: domain.PhaseReading, Name: "阅读剧本"},
+			{ID: "p2", Type: domain.PhaseReveal, Name: "复盘"},
+		},
+	}
+	rec := &domain.ScriptRecord{ID: "script_test", Status: "published", Body: sc}
+	st.PutScript(rec)
+
+	cfg := &config.Config{Limits: config.Limits{
+		MaxRooms:     1,
+		FloorTimeout: time.Second,
+		AgentTimeout: 2 * time.Second,
+		// This test only checks slot release, so let the two phases run on.
+		AutoAdvance: true,
+	}}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	reg := llm.NewRegistry("mock", 1)
+	reg.Register(llm.NewMock())
+	mgr := rooms.NewManager(ctx, st, realtime.NewHub(), reg, cfg)
+	t.Cleanup(mgr.Close)
+
+	room, _ := startGame(t, mgr, st, rec.ID, "room_first")
+	if _, err := startGame2(t, mgr, st, rec.ID, "room_second"); err == nil {
+		t.Fatalf("second start succeeded while the first game still ran")
+	}
+
+	// Wait for the two-phase game to finish and the manager to release it.
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, live := mgr.Actor(room.ID); !live {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if _, live := mgr.Actor(room.ID); live {
+		t.Fatalf("finished actor still holds the room slot")
+	}
+
+	stored, err := st.GetRoom(room.ID)
+	if err != nil {
+		t.Fatalf("get room: %v", err)
+	}
+	if stored.Status != domain.RoomFinished {
+		t.Fatalf("room status = %q, want %q", stored.Status, domain.RoomFinished)
+	}
+
+	// With the slot freed the next game can start.
+	second, _ := startGame(t, mgr, st, rec.ID, "room_second")
+	if second == nil {
+		t.Fatal("second game did not start after the slot was freed")
+	}
+}
+
+func startGame(t *testing.T, mgr *rooms.Manager, st *store.Store, scriptID, roomID string) (*domain.Room, *domain.Game) {
+	t.Helper()
+	room, g, err := prepare(t, mgr, st, scriptID, roomID)
+	if err != nil {
+		t.Fatalf("start %s: %v", roomID, err)
+	}
+	return room, g
+}
+
+func startGame2(t *testing.T, mgr *rooms.Manager, st *store.Store, scriptID, roomID string) (*domain.Room, error) {
+	t.Helper()
+	_, _, err := prepare(t, mgr, st, scriptID, roomID)
+	return nil, err
+}
+
+func prepare(t *testing.T, mgr *rooms.Manager, st *store.Store, scriptID, roomID string) (*domain.Room, *domain.Game, error) {
+	t.Helper()
+	gameID := store.NewID("game")
+	g := domain.NewGame(gameID, roomID, scriptID, []domain.Seat{
+		{ID: store.NewID("seat"), RoomID: roomID, Kind: domain.SeatHuman, DisplayName: "玩家一", IsHost: true},
+		{ID: store.NewID("seat"), RoomID: roomID, Kind: domain.SeatHuman, DisplayName: "玩家二", PersonaID: "guarded"},
+	})
+	st.PutGame(g)
+	room := &domain.Room{
+		ID:       roomID,
+		Code:     store.NewCode(),
+		Name:     "测试房",
+		ScriptID: scriptID,
+		GameID:   gameID,
+		Status:   domain.RoomLobby,
+		MaxSeats: 2,
+	}
+	st.PutRoom(room)
+	rec, err := st.GetScript(scriptID)
+	if err != nil {
+		return room, g, err
+	}
+	if _, err := mgr.Start(room, rec); err != nil {
+		return room, g, err
+	}
+	return room, g, nil
+}

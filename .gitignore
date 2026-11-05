@@ -1,0 +1,43 @@
+# 依赖与构建产物
+node_modules/
+web/dist/
+server/bin/
+bin/
+*.test
+*.out
+
+# 运行期数据（快照、上传、密钥）
+server/data/
+server/data-dev/
+data/
+
+# 剧本原件归档（解压后的原始素材，体积大，不进仓库）
+raw/
+
+# 一次性整理脚本与中间产物
+.tmp-*/
+
+# 语音模型（体积大，不进仓库）
+web/public/models/
+*.onnx
+*.onnx.data
+*.tokens
+*.bin
+
+# 开发期截图（浏览器实测/QA 验收产物，需要文档配图时移入 docs/）
+/qa*.png
+/shot-*.png
+/verify-*.png
+
+# 服务运行日志
+server/logs/
+
+# Python 缓存（离线转录/解析脚本）
+__pycache__/
+*.pyc
+
+# 编辑器/系统
+.DS_Store
+.idea/
+.vscode/
+*.log

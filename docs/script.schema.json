@@ -1,0 +1,154 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://script-play.local/schema/script.schema.json",
+  "title": "剧本杀剧本 v1",
+  "description": "script-play 的标准剧本格式。truth 只对主持人/复盘可见，private 只对该角色可见。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "meta", "truth", "phases", "roles", "clues"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "meta": { "$ref": "#/$defs/meta" },
+    "truth": { "$ref": "#/$defs/truth" },
+    "phases": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/phase" } },
+    "roles": { "type": "array", "minItems": 2, "items": { "$ref": "#/$defs/role" } },
+    "clues": { "type": "array", "items": { "$ref": "#/$defs/clue" } },
+    "facts": { "type": "array", "items": { "$ref": "#/$defs/fact" } }
+  },
+  "$defs": {
+    "meta": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["title", "playerCount"],
+      "properties": {
+        "title": { "type": "string", "minLength": 1 },
+        "author": { "type": "string" },
+        "summary": { "type": "string" },
+        "difficulty": { "enum": ["easy", "medium", "hard", ""] },
+        "tags": { "type": "array", "items": { "type": "string" } },
+        "playerCount": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["min", "max"],
+          "properties": {
+            "min": { "type": "integer", "minimum": 2 },
+            "max": { "type": "integer", "minimum": 2 }
+          }
+        },
+        "durationMin": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "truth": {
+      "type": "object",
+      "description": "案件真相。永不进入任何角色 prompt。",
+      "additionalProperties": false,
+      "required": ["killerRoleId"],
+      "properties": {
+        "killerRoleId": { "type": "string" },
+        "method": { "type": "string" },
+        "motive": { "type": "string" },
+        "timeline": { "type": "array", "items": { "type": "string" } },
+        "summary": { "type": "string" }
+      }
+    },
+    "phase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "type", "name"],
+      "properties": {
+        "id": { "type": "string" },
+        "type": { "enum": ["reading", "opening", "search", "discussion", "vote", "reveal"] },
+        "name": { "type": "string" },
+        "round": { "type": "integer", "minimum": 0 },
+        "dmScript": { "type": "string" },
+        "cluePool": { "type": "array", "items": { "type": "string" } },
+        "perPlayerPick": { "type": "integer", "minimum": 1 },
+        "speechPerPlayer": { "type": "integer", "minimum": 1 },
+        "searchMode": {
+          "enum": ["pick", "random", ""],
+          "description": "搜证方式：pick 由玩家自选，random 由玩家点「随机抽取」逐条抽（隐藏线索标题）。"
+        },
+        "order": {
+          "enum": ["round_robin", "random", "host_assigned", ""],
+          "description": "行动顺序：round_robin 按入座轮流，random 阶段开始时打乱一次，host_assigned 由主持人一次性排好整轮。"
+        },
+        "timeoutSec": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "role": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "public", "private"],
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string", "minLength": 1 },
+        "personaId": { "type": "string" },
+        "public": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "intro": { "type": "string" },
+            "appearance": { "type": "string" }
+          }
+        },
+        "private": {
+          "type": "object",
+          "description": "只对该角色（及其 AI 座位）可见。",
+          "additionalProperties": false,
+          "required": ["script"],
+          "properties": {
+            "script": { "type": "string", "minLength": 1 },
+            "secrets": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["id", "text", "revealCost"],
+                "properties": {
+                  "id": { "type": "string" },
+                  "text": { "type": "string" },
+                  "revealCost": { "type": "number", "minimum": 0, "maximum": 1 }
+                }
+              }
+            },
+            "goals": { "type": "array", "items": { "type": "string" } },
+            "knownFactIds": { "type": "array", "items": { "type": "string" } }
+          }
+        }
+      }
+    },
+    "clue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "title", "content"],
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string", "minLength": 1 },
+        "location": { "type": "string" },
+        "back": { "type": "string", "description": "实体线索卡背面的字（地点＋编号，如「船长 07」）。搜证选项只下发这一行，不含 title 与 content。" },
+        "content": { "type": "string" },
+        "ownerRoleId": { "type": "string", "description": "私人物品：只有该角色初始可见，且只能由该角色搜到。" },
+        "isPublic": { "type": "boolean", "description": "true 表示开局即公共线索。" },
+        "imageUrl": { "type": "string" },
+        "links": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "roles": { "type": "array", "items": { "type": "string" } },
+            "secrets": { "type": "array", "items": { "type": "string" } },
+            "facts": { "type": "array", "items": { "type": "string" } }
+          }
+        }
+      }
+    },
+    "fact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "text"],
+      "properties": {
+        "id": { "type": "string" },
+        "text": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}
