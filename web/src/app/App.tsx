@@ -70,12 +70,10 @@ export function App() {
        *  `sm` up. Every item shares `.nav-item`, so heights never disagree. */}
       <header className="mb-4 flex flex-wrap items-center gap-2 sm:mb-5 sm:gap-3">
         {inRoom ? (
-          <button
-            type="button"
-            onClick={() => go('lobby')}
-            className="nav-item order-1 border border-line"
-          >
-            <span aria-hidden="true">←</span>
+          <button type="button" onClick={() => go('lobby')} className="back-link order-1">
+            <span aria-hidden="true" className="text-accent">
+              ←
+            </span>
             返回大厅
           </button>
         ) : (
