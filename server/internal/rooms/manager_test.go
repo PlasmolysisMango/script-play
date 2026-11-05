@@ -2,6 +2,7 @@ package rooms_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -123,4 +124,74 @@ func prepare(t *testing.T, mgr *rooms.Manager, st *store.Store, scriptID, roomID
 		return room, g, err
 	}
 	return room, g, nil
+}
+
+// Roles are drawn at random, not in join order. The host joins first every
+// time, so "first seat gets the first role" turned every rehearsal into the
+// same character; this test starts the same room repeatedly and expects the
+// host's role to vary.
+func TestRolesAreDrawnAtRandom(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(dir)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	sc := &domain.Script{
+		SchemaVersion: 1,
+		Meta:          domain.Meta{Title: "四角本", PlayerCount: domain.CountRange{Min: 4, Max: 4}},
+		Roles: []domain.Role{
+			{ID: "r1", Name: "甲"}, {ID: "r2", Name: "乙"}, {ID: "r3", Name: "丙"}, {ID: "r4", Name: "丁"},
+		},
+		Phases: []domain.Phase{
+			{ID: "p1", Type: domain.PhaseReading, Name: "阅读剧本"},
+			{ID: "p2", Type: domain.PhaseReveal, Name: "复盘"},
+		},
+	}
+	rec := &domain.ScriptRecord{ID: "script_random", Status: "published", Body: sc}
+	st.PutScript(rec)
+
+	cfg := &config.Config{Limits: config.Limits{
+		MaxRooms:     64,
+		FloorTimeout: time.Second,
+		AgentTimeout: time.Second,
+		AutoAdvance:  true,
+	}}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	reg := llm.NewRegistry("mock", 1)
+	reg.Register(llm.NewMock())
+	mgr := rooms.NewManager(ctx, st, realtime.NewHub(), reg, cfg)
+	t.Cleanup(mgr.Close)
+
+	seen := map[string]bool{}
+	for i := 0; i < 12; i++ {
+		roomID := fmt.Sprintf("room_rand_%d", i)
+		gameID := store.NewID("game")
+		g := domain.NewGame(gameID, roomID, rec.ID, []domain.Seat{
+			{ID: store.NewID("seat"), RoomID: roomID, Kind: domain.SeatHuman, DisplayName: "主持人", IsHost: true},
+			{ID: store.NewID("seat"), RoomID: roomID, Kind: domain.SeatHuman, DisplayName: "玩家二"},
+			{ID: store.NewID("seat"), RoomID: roomID, Kind: domain.SeatHuman, DisplayName: "玩家三"},
+			{ID: store.NewID("seat"), RoomID: roomID, Kind: domain.SeatHuman, DisplayName: "玩家四"},
+		})
+		st.PutGame(g)
+		room := &domain.Room{
+			ID: roomID, Code: store.NewCode(), Name: "随机房", ScriptID: rec.ID,
+			GameID: gameID, Status: domain.RoomLobby, MaxSeats: 4,
+		}
+		st.PutRoom(room)
+		if _, err := mgr.Start(room, rec); err != nil {
+			t.Fatalf("start %s: %v", roomID, err)
+		}
+		started, _ := st.GetGame(gameID)
+		hostRole := started.Seats[0].RoleID
+		if hostRole == "" {
+			t.Fatalf("host seat got no role")
+		}
+		seen[hostRole] = true
+	}
+	if len(seen) < 2 {
+		t.Fatalf("host played the same role %d times: %v", 12, seen)
+	}
 }

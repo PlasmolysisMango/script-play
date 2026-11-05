@@ -7,7 +7,7 @@ import { Empty, Hint, SectionTitle, Spinner, StatusDot, Tag } from '../../compon
 import { Markdown } from '../../components/Markdown'
 import { styleOf, type Line } from '../../lib/transcript'
 import { ReadingPage } from './ReadingPage'
-import { narrationFor, speak, stopSpeaking, warmVoices, type VoiceCapabilities } from '../../voice'
+import { narrationFor, probeVoices, speak, stopSpeaking, warmVoices, type VoiceCapabilities } from '../../voice'
 import { useVoiceCapabilities } from '../../lib/useVoice'
 import type { GameEvent, SeatState, SpeechSlot, TurnOption, TurnPrompt, Visible } from '../../types/schema'
 
@@ -74,6 +74,14 @@ export function GamePage({ code }: { code: string }) {
   const isHost = state?.visible.self.isHost ?? false
   const phase = state?.visible.phase
   const floorMine = !!state?.floor && state.floor.seatId === seatId
+  // A phase is entered, not skipped, and the button should say where to. The
+  // list is already ordered, so the next one is simply the neighbour of the
+  // current entry.
+  const nextPhase = useMemo(() => {
+    const list = state?.phases ?? []
+    const at = list.findIndex((p) => p.status === 'current')
+    return at >= 0 ? (list[at + 1] ?? null) : null
+  }, [state?.phases])
 
   // Lines that arrived before this page opened only exist in the snapshot, so
   // the host's opening monologue would be silent. Read the newest one once,
@@ -227,16 +235,19 @@ export function GamePage({ code }: { code: string }) {
             <button
               type="button"
               className="btn-ghost text-xs"
-              aria-pressed={voice.mandarinVoices > 0 ? tts : false}
-              disabled={voice.mandarinVoices === 0}
-              title={voice.mandarinVoices === 0 ? '当前环境没有普通话音色，朗读不会发声' : '朗读主持人台词、发言与线索'}
+              aria-pressed={voice.tts ? tts : false}
+              disabled={!voice.tts}
+              title={voiceTitle(voice)}
               onClick={() => {
                 stopSpeaking()
                 warmVoices()
+                // Phones only enumerate voices after the engine runs once, so the
+                // tap that turns reading on is also the tap that wakes it.
+                probeVoices()
                 setTts(!tts)
               }}
             >
-              {voice.mandarinVoices === 0 ? '🔇 无音色' : tts ? '🔊 朗读开' : '🔈 朗读关'}
+              {voiceLabel(voice, tts)}
             </button>
             <button type="button" className="btn-ghost text-xs" onClick={() => navigate('room', code)}>
               房间
@@ -369,7 +380,7 @@ export function GamePage({ code }: { code: string }) {
               aside={
                 <Hint
                   align="right"
-                  text="跳过会立刻推进阶段：有人掉线、或房间创建时选了「等主持人推进」，都在这里救场。AI 座位的发言与搜证由服务端驱动。"
+                  text="推进后会以主持人身份写进发言记录，所有人都会看到「进入下一阶段：X」。有人掉线、或本阶段没什么可做时用它。AI 座位的发言与搜证由服务端驱动。"
                 />
               }
             >
@@ -377,12 +388,15 @@ export function GamePage({ code }: { code: string }) {
             </SectionTitle>
             <button
               type="button"
-              className="btn-ghost w-full text-xs"
+              className="btn-primary w-full text-xs"
               disabled={state.status !== 'running'}
               onClick={() => send({ type: 'host.skip' })}
             >
-              跳过当前阶段
+              <span className="min-w-0 truncate">{nextPhase ? `进入下一阶段：${nextPhase.name}` : '进入下一阶段'}</span>
             </button>
+            <p className="text-[11px] leading-relaxed text-slate-500">
+              {nextPhase ? '本阶段结束后，下一段流程会接着开始。' : '已经是最后一个阶段，结束后进入复盘。'}
+            </p>
           </div>
         ) : null}
 
@@ -641,7 +655,7 @@ function PhaseActions({
                 {queued >= 0 ? `已排队（第 ${queued + 1} 位）` : '我要发言'}
               </button>
             )}
-            {isHost ? <span className="self-center text-[11px] text-slate-500">主持人可用右侧「跳过当前阶段」收尾。</span> : null}
+            {isHost ? <span className="self-center text-[11px] text-slate-500"> 主持人可在右侧「进入下一阶段」收尾。</span> : null}
           </div>
         ) : null}
         <QueueList state={state} seatId={seatId} />
@@ -932,12 +946,14 @@ function RolePanel({
 }
 
 function VoiceHint({ caps }: { caps: VoiceCapabilities }) {
-  const silent = caps.tts && caps.mandarinVoices === 0
+  const silent = caps.tts && caps.mandarinVoices === 0 && !caps.fallback
   const detail = silent
-    ? '这台机器没有装普通话音色，所以朗读不会发声（装好普通话语音包后刷新页面即可）。'
+    ? '这台机器的朗读引擎没有列出普通话音色，所以朗读不会发声（装好普通话语音包后刷新页面即可）。'
     : !caps.tts
       ? '这个浏览器没有朗读引擎。'
-      : `朗读只用普通话（zh-CN）音色，粤语与台湾腔会被跳过；当前有 ${caps.mandarinVoices} 个普通话音色，每个角色分到不同音色。`
+      : caps.fallback
+        ? '浏览器没有列出任何音色（手机端很常见），朗读会交给系统默认的普通话引擎；如果听着不像普通话，请在系统设置里把中文语音包设为默认。'
+        : `朗读只用普通话（zh-CN）音色，粤语与台湾腔会被跳过；当前有 ${caps.mandarinVoices} 个普通话音色，每个角色分到不同音色。`
   return (
     <p className="flex flex-wrap items-center gap-1.5 text-xs text-slate-500">
       <span>语音输入用键盘自带的听写</span>
@@ -946,8 +962,23 @@ function VoiceHint({ caps }: { caps: VoiceCapabilities }) {
         text={`手机输入法的麦克风键、Windows 的 Win+H、macOS 连按 Fn，识别结果直接落进输入框，改完再发；Enter 发送，Shift+Enter 换行。${detail}`}
       />
       {silent ? <span className="text-amber-300">· 无普通话音色</span> : null}
+      {caps.fallback ? <span className="text-slate-400">· 系统音色</span> : null}
     </p>
   )
+}
+
+function voiceTitle(caps: VoiceCapabilities): string {
+  if (!caps.tts) return '这个浏览器没有朗读引擎'
+  if (caps.mandarinVoices > 0) return '朗读主持人台词、发言与线索'
+  if (caps.fallback) return '未读到音色列表，按系统默认普通话朗读'
+  return '系统里没有普通话音色，朗读不会发声'
+}
+
+function voiceLabel(caps: VoiceCapabilities, on: boolean): string {
+  if (!caps.tts) return '🔇 无朗读'
+  if (caps.mandarinVoices > 0) return on ? '🔊 朗读开' : '🔈 朗读关'
+  if (caps.fallback) return on ? '🔊 系统音色' : '🔈 朗读关'
+  return '🔇 无音色'
 }
 
 function roleNameOf(visible: Visible, roleId: string): string {

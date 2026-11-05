@@ -47,6 +47,56 @@ func mustHandle(t *testing.T, a *Actor, seatID string, msg ClientMessage) {
 	}
 }
 
+// Advancing is the host's own action, so it belongs in the host's own line: the
+// table reads "主持人：进入下一阶段：X" instead of inferring it from a divider.
+func TestHostAdvanceIsAnnouncedAsHostLine(t *testing.T) {
+	a := talkTable(t)
+	waitFor(t, 5*time.Second, func() bool {
+		st, ok := a.StateForSeat("seat1")
+		return ok && st.PhaseDone
+	})
+	mustHandle(t, a, "seat1", ClientMessage{Type: "host.skip"})
+
+	waitFor(t, 5*time.Second, func() bool {
+		for _, ev := range a.Snapshot().Events {
+			if ev.Type == domain.EvDM && ev.Speaker == "主持人" && strings.HasPrefix(ev.Text, "进入下一阶段：") {
+				return strings.HasPrefix(ev.Text, "进入下一阶段：第一轮搜证")
+			}
+		}
+		return false
+	})
+
+	// The divider that follows marks the phase without repeating the sentence.
+	for _, ev := range a.Snapshot().Events {
+		if ev.Type == domain.EvPhase && ev.PhaseID == "p2" {
+			if strings.Contains(ev.Text, "进入") {
+				t.Fatalf("phase divider repeats the host line: %q", ev.Text)
+			}
+			return
+		}
+	}
+	t.Fatal("no divider for the second phase")
+}
+
+// Bracketed asides are stage directions. They are dropped before a line is
+// stored, so nobody has to hear “（拍桌子）” read aloud, and so the transcript
+// stays a record of what was said.
+func TestCleanSpeechDropsStageDirections(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"（拍桌子）你到底说不说？", "你到底说不说？"},
+		{"我的话没变（叹气）。", "我的话没变。"},
+		{"(slams the table) Tell me.", "Tell me."},
+		{"他（她）先走的", "他先走的"},
+		{"（笑）", ""},
+		{"我看见了门外的人。", "我看见了门外的人。"},
+	}
+	for _, c := range cases {
+		if got := cleanSpeech(c.in); got != c.want {
+			t.Errorf("cleanSpeech(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
 // openTalk walks the scripted opening round and returns once the floor is open
 // to requests, which is where every free-discussion rule applies.
 func openTalk(t *testing.T, a *Actor) {

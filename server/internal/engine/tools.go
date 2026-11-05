@@ -82,11 +82,33 @@ func looksMachined(s string) bool {
 
 var reminderBlock = regexp.MustCompile(`(?s)<system-reminder>.*?</system-reminder>`)
 
+// A bracketed aside is a stage direction — “（拍桌子）”, “（叹气）” — which no
+// one should have to hear read aloud. Short ones with no sentence punctuation
+// inside are dropped; a longer bracketed sentence is content and stays.
+var bracketAside = regexp.MustCompile(`[（(]([^（）()]{1,30})[）)]`)
+
+func stripDirection(s string) string {
+	if !strings.ContainsAny(s, "（(") {
+		return s
+	}
+	s = bracketAside.ReplaceAllStringFunc(s, func(m string) string {
+		sub := bracketAside.FindStringSubmatch(m)
+		if len(sub) < 2 || strings.ContainsAny(sub[1], "。！？!?；;") {
+			return m
+		}
+		// No replacement space: in Chinese the aside sits between two characters
+		// and a space there would leave a gap in the middle of the sentence.
+		return ""
+	})
+	return s
+}
+
 // cleanSpeech strips harness chatter a provider can leave inside a text field.
 // A field that is still nothing but an envelope yields no line at all: saying
 // `{"tool":"speak"}` out loud is worse than saying nothing.
 func cleanSpeech(s string) string {
 	s = reminderBlock.ReplaceAllString(s, " ")
+	s = stripDirection(s)
 	s = strings.Join(strings.Fields(s), " ")
 	if s == "" || (strings.HasPrefix(s, "{") && strings.Contains(s, `"tool"`)) {
 		return ""
@@ -104,7 +126,7 @@ func (a *Actor) speechToolsLocked(seat domain.Seat, ownClues []string) []ToolSpe
 		tools = append(tools, ToolSpec{
 			Name: ToolReveal,
 			Args: fmt.Sprintf(`{"tool":"reveal","clueId":"%s","text":"可选，一边公开一边说的话"}`, ownClues[0]),
-			Desc: "公开你掌握的一条线索，让全桌都看到。可用线索 id：" + strings.Join(ownClues, "、"),
+			Desc: "把一条线索原文直接贴到公屏。证据通常靠你发言转述，只有剧本要求亮出物证时才用它。可用线索 id：" + strings.Join(ownClues, "、"),
 		})
 	}
 	return tools

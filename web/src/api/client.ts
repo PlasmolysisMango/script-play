@@ -251,14 +251,14 @@ export const api = {
   },
   async addSeat(
     code: string,
-    body: { kind?: string; displayName?: string; roleId?: string; personaId?: string; modelId?: string },
+    body: { kind?: string; displayName?: string; roleId?: string; personaId?: string },
   ): Promise<Room> {
     return withRoom(await request(`/api/rooms/${code}/seats`, { method: 'POST', body: JSON.stringify(body) }))
   },
   async patchSeat(
     code: string,
     seatId: string,
-    body: { displayName?: string; roleId?: string; personaId?: string; modelId?: string; ready?: boolean },
+    body: { displayName?: string; roleId?: string; personaId?: string; ready?: boolean },
   ): Promise<Room> {
     return withRoom(await request(`/api/rooms/${code}/seats/${seatId}`, { method: 'PATCH', body: JSON.stringify(body) }))
   },

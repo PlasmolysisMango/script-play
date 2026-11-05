@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	"sync"
 	"time"
 
@@ -223,6 +224,10 @@ func (m *Manager) Start(room *domain.Room, rec *domain.ScriptRecord) (*engine.Ac
 			free = append(free, r.ID)
 		}
 	}
+	// Drawing at random, not in join order: whoever opens the room joins first, and
+	// handing them the first role in the script meant the host played the same
+	// character in every single test game.
+	rand.Shuffle(len(free), func(i, j int) { free[i], free[j] = free[j], free[i] })
 	for i := range g.Seats {
 		if g.Seats[i].Kind == domain.SeatSpectator || g.Seats[i].RoleID != "" {
 			continue

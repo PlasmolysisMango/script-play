@@ -72,21 +72,46 @@ export function warmVoices() {
 
 /** Chinese voices, Mandarin only, local ones first, then by name so slot i is
  * stable. Cantonese (zh-HK/yue) and zh-TW are excluded on purpose: a table of
- * Mandarin speakers must never suddenly answer in Cantonese. */
+ * Mandarin speakers must never suddenly answer in Cantonese. `cmn-*` is the
+ * same language under its ISO 639-3 code, which some Android engines report. */
 export function isMandarinLang(lang: string): boolean {
   const l = (lang || '').replace(/_/g, '-').toLowerCase()
-  if (l === 'zh' || l === 'zh-cn' || l === 'zh-sg' || l === 'zh-hans') return true
-  return l.startsWith('zh-hans-')
+  if (!l) return false
+  if (l === 'cmn' || l.startsWith('cmn-')) return true
+  if (!(l === 'zh' || l.startsWith('zh-'))) return false
+  return !/(^|-)hk($|-)|(^|-)tw($|-)|(^|-)mo($|-)|hant|yue/.test(l)
+}
+
+function allVoices(): SpeechSynthesisVoice[] {
+  if (typeof speechSynthesis === 'undefined') return []
+  return speechSynthesis.getVoices()
 }
 
 export function mandarinVoices(): SpeechSynthesisVoice[] {
-  if (typeof speechSynthesis === 'undefined') return []
-  const voices = speechSynthesis.getVoices().filter((v) => isMandarinLang(v.lang))
+  const voices = allVoices().filter((v) => isMandarinLang(v.lang))
   const rank = (v: SpeechSynthesisVoice) => {
     const cn = /^zh[-_]cn$/i.test(v.lang) ? 0 : 2
     return cn + (v.localService ? 0 : 1)
   }
   return voices.slice().sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name))
+}
+
+/**
+ * Pokes the engine so Android Chromium enumerates its voices.
+ *
+ * Phones hand the Web Speech API to the system TTS engine, and on Chromium the
+ * list often stays empty until an utterance has been spoken once — so a page
+ * that waits for `voiceschanged` before speaking never gets a voice at all.
+ * A silent utterance breaks that deadlock; call it from a user gesture.
+ */
+export function probeVoices() {
+  if (typeof speechSynthesis === 'undefined') return
+  speechSynthesis.getVoices()
+  if (speechSynthesis.getVoices().length > 0) return
+  const wake = new SpeechSynthesisUtterance(' ')
+  wake.volume = 0
+  wake.lang = 'zh-CN'
+  speechSynthesis.speak(wake)
 }
 
 function pickMandarinVoice(): SpeechSynthesisVoice | null {
@@ -113,11 +138,19 @@ export function speak(text: string, options: SpeakOptions = {}): boolean {
   const voices = mandarinVoices()
   const plan = options.seed ? planFor(options.seed, voices.length) : null
   const voice = plan && plan.voiceIndex >= 0 ? (voices[plan.voiceIndex] ?? pickMandarinVoice()) : pickMandarinVoice()
-  // No Mandarin voice means no sound: reading Chinese with an English or
-  // Cantonese synthesiser is worse than staying quiet.
-  if (!voice) return false
-  utterance.voice = voice
-  utterance.lang = voice.lang
+  if (voice) {
+    utterance.voice = voice
+    utterance.lang = voice.lang
+  } else if (allVoices().length === 0) {
+    // Nothing enumerated at all (the usual state on a phone): hand the line to
+    // the system engine with a Mandarin language tag. This is the fallback that
+    // keeps a phone readable, and it is deliberately narrower than "any voice":
+    // when the browser *does* list voices and none is Mandarin, we stay silent
+    // rather than read Chinese with a Cantonese or English synthesiser.
+    utterance.lang = 'zh-CN'
+  } else {
+    return false
+  }
   utterance.rate = options.rate ?? plan?.rate ?? 1.02
   utterance.pitch = options.pitch ?? plan?.pitch ?? 1
   if (options.onEnd) utterance.onend = () => options.onEnd?.()
@@ -132,14 +165,22 @@ export function stopSpeaking() {
 export type VoiceCapabilities = {
   /** A speech synthesiser exists at all. */
   tts: boolean
-  /** How many Mandarin voices it offers; 0 means reading aloud stays silent. */
+  /** How many Mandarin voices it offers; 0 means no named voice to assign. */
   mandarinVoices: number
+  /**
+   * True when the browser enumerates no voices at all, so lines are spoken by
+   * the system engine through a `zh-CN` language tag instead of a named voice.
+   * Phones (Chromium on Android) are in this state until an utterance wakes the
+   * engine, so it is a normal state, not a broken one.
+   */
+  fallback: boolean
 }
 
 export function voiceCapabilities(): VoiceCapabilities {
   const tts = typeof speechSynthesis !== 'undefined'
-  const voices = tts ? mandarinVoices().length : 0
-  return { tts, mandarinVoices: voices }
+  const named = tts ? mandarinVoices().length : 0
+  const known = tts ? allVoices().length : 0
+  return { tts, mandarinVoices: named, fallback: tts && known === 0 }
 }
 
 // ---- what gets read aloud ----

@@ -55,6 +55,14 @@ describe('mandarin only voices', () => {
     }
   })
 
+  it('accepts the ISO 639-3 code Android engines report', () => {
+    // Some Android TTS engines tag Mandarin as cmn-* rather than zh-*; the
+    // language is the same, so refusing it silences a phone that speaks it.
+    for (const lang of ['cmn', 'cmn-Hans-CN', 'cmn-Hans']) {
+      expect(isMandarinLang(lang)).toBe(true)
+    }
+  })
+
   it('rejects cantonese and other chinese variants', () => {
     for (const lang of ['zh-HK', 'zh_TW', 'zh-MO', 'zh-Hant', 'zh-Hant-TW', 'yue', 'en-US', '']) {
       expect(isMandarinLang(lang)).toBe(false)

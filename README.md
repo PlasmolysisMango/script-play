@@ -293,7 +293,14 @@ prompt 走 stdin。`--tools=` 必须显式关闭，否则子进程会在工作�
 4. WebSocket 下行同样按座位过滤，不做「前端隐藏」。
 
 `go test ./internal/engine` 里每个座位都有 golden 断言：可见字段集合多一个就失败。
-`go test ./internal/httpapi -run TestFullGame` 会用 REST + WebSocket 真实打完一局（5 个阶段）。
+`go test ./internal/httpapi -run TestFullGame` 会用 REST + WebSocket 真实打完一 局（5 个阶段）。
+
+## 对局约定
+
+- **角色随机抽取**：开局时，未指定角色的座位从剩余角色里随机发牌（不再按入座顺序），房主不会每次都拿到剧本第一个角色。
+- **主持人推进**：对局页右侧的「进入下一阶段：X」会先在发言记录里写一条主持人的条目，再切换阶段；阶段分隔线只显示阶段名。
+- **线索默认不公开**：搜到的线索只有本人可见，公开靠当事人用嘴说出来，或在搜证页点「公开」；剧本里标了 `isPublic` 的线索开局即公共（即「剧本要求」的情况）。AI 搜证不会再自动公开线索。
+- **台词不含动作描写**：提示词要求只输出台词，服务端 `cleanSpeech` 会再裁一遍短括号旁白（如「（拍桌子）」），所以时间线与朗读里不会出现舞台提示。
 
 ## 目录
 
@@ -343,7 +350,9 @@ cd server && SP_E2E_PROVIDER=qodercli go test ./internal/httpapi -run TestFullGa
 - **语音**：方案写的是 sherpa-onnx WASM（离线流式 ASR + VITS TTS）。实际只保留输出侧：
   TTS 用浏览器自带的 `speechSynthesis`，零下载、零依赖，只使用普通话（`zh-CN`/`zh-Hans`）音色，
   粤语（`zh-HK`/`yue`）与台湾腔（`zh-TW`）会被跳过；每个角色按 `roleId` 稳定分配一个普通话音色并
-  叠加语速/音高，同时朗读主持人台词、线索公开、投票结果与复盘：一局多人不会听起来像同一个人。
+  叠加语速/音高，同时朗读主持人台词、线索公开、投票结果与复盘：一局多人不会听起 来像同一个人。
+  手机上的 Chromium（含 Edge）常常不列举任何音色，此时改用 `lang=zh-CN` 交给系统默认引擎朗读，
+  并在页面上标「系统音色」；只有「列出了音色但都不是普通话」才真正静默。
   **语音输入已移除**：`getUserMedia` 与 `SpeechRecognition` 都要求 secure context，本服务以
   `http://<IP>:9091` 部署时麦克风对象根本不存在，按钮只能置灰；对局页改为提示玩家用系统输入法的
   语音听写（手机输入法麦克风键 / Windows Win+H / macOS 连按 Fn），结果直接落进输入框可编辑。

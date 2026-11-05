@@ -132,7 +132,7 @@ Content-Type: application/json
 | POST | `/api/rooms` | `{name?, scriptId, maxSeats?, allowSpectator?, speechSeconds?, autoSkip?}` → `{room}`，创建者为房主并自动占座；`maxSeats` 留空取剧本 `playerCount.max`，人数固定（min=max）时必须等于该值，可浮动时只能落在 min~max 内，否则 400；`speechSeconds` 为 10~600（单次轮次的秒数）、0（服务端默认，见 `/api/health` 的 `floorTimeoutSec`）或 -1（不限时）；计时按「每次轮到某个座位」重新开始，搜证与投票的等待也用同一个值；`autoSkip=false` 表示超时不跳过、等主持人推进（`-1` 不产生超时，此项无意义） |
 | GET | `/api/rooms/{code}` | `{room}` |
 | POST | `/api/rooms/{code}/join` | `{displayName?, roleId?, personaId?, spectator?}`；已有座位则 `rejoined: true`；对局已开始时只能以 `spectator` 身份加入（需 `allowSpectator`） |
-| POST | `/api/rooms/{code}/seats` | 房主添加 AI 座位 `{roleId?, personaId?, modelId?, displayName?}`；`personaId` 缺省或传 `random` 时服务端抽一个预设并落库为具体 id |
+| POST | `/api/rooms/{code}/seats` | 房主添加 AI 座位 `{roleId?, personaId?, displayName?}`；`personaId` 缺省或传 `random` 时服务端抽一个预设并落库为具体 id；`modelId` 仍可传（留空用服务端默认），但 Web 界面不再暴露模型选择 |
 | PATCH | `/api/rooms/{code}/seats/{seatId}` | 房主可改全部字段；玩家改**自己**座位只能改 `roleId/ready`（选角色 / 准备），改昵称、性格、模型返回 403；`personaId: "random"` 同样会被抽成具体预设 |
 | DELETE | `/api/rooms/{code}/seats/{seatId}` | 房主移除座位（不能移除自己；对局开始后返回 409） |
 | POST | `/api/rooms/{code}/start` | 房主开局，自动给空座位分配未用角色 |
@@ -207,11 +207,11 @@ Content-Type: application/json
 { "type": "clue.reveal", "clueId": "c1" }
 { "type": "vote.cast", "roleId": "r3" }
 { "type": "order.set", "seatIds": ["seat_a", "seat_b"] }  // 主持人定序：必须是全部玩家的一个排列
-{ "type": "host.skip" }
+{ "type": "host.skip" }   // 进入下一阶段（帧名保留旧名）：UI 写「进入下一阶段：X」，落盘一条主持人的 dm
 { "type": "ping" }
 ```
 
-`ping` 与 `host.skip` 立即处理；其余命令优先投递到当前阶段的等待通道（搜证 / 投票 / 发言权 / 主持人定序）。
+`ping` 与 `host.skip` 立即处理；`host.skip` 推进后先写一条 `dm`（`speaker` 为「主持人」，`text` 为 `进入下一阶段：<下一阶段名>`），再进入新阶段并写 `phase` 事件（该事件只带阶段名）；其余命令优先投递到当前阶段的等待通道（搜证 / 投票 / 发言权 / 主持人定序）。
 等待通道里收到 `speak.text` 一律按自由发言落盘，不会因为该座位欠一次搜证或投票而被吞掉；
 `clue.reveal` 是旁路命令，任何阶段都生效（包括正轮到自己搜证、发言或投票时），
 失败原因（例如线索不属于你）以 `error` 帧回写。

@@ -53,7 +53,7 @@ func (b *PromptBuilder) Build(in PromptInput) llm.Request {
 	system := fmt.Sprintf(`你正在一场剧本杀中扮演「%s」。你只能使用下面【可见信息】中出现的内容。
 你必须严格遵守：
 1. 可见信息之外的事实（他人的角色本、未公开线索、案件真相）你不知道、也无法引用，绝不能假装知道。
-2. 只输出角色台词，可带少量括号动作描写；不要输出分析过程、编号、标题、或任何“作为AI”的自述。
+2. 只输出角色台词，不要写括号里的动作、神态或舞台提示（例如（拍桌子）、（叹气）、（笑）），也不要输出分析过程、编号、标题、或任何“作为AI”的自述。
 3. 不要复述整段角色本，按你的性格与目的选择性透露。
 4. 输出不超过 %d 句，直接说话，不要重复别人刚说过的话。
 
@@ -169,7 +169,9 @@ func writeFacts(u *strings.Builder, v Visible) {
 
 func writeClues(u *strings.Builder, v Visible) {
 	if len(v.OwnClues) > 0 {
-		u.WriteString("\n【你掌握的线索】\n")
+		// Nobody else can see these: the only ways out are describing what they
+		// showed, or the explicit reveal tool.
+		u.WriteString("\n【你掌握的线索（只有你看得到；要说出来别人才知道，也可以调用 reveal 公开）】\n")
 		for _, c := range v.OwnClues {
 			fmt.Fprintf(u, "- [%s] %s：%s\n", c.ID, c.Title, oneLine(c.Content))
 		}

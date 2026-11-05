@@ -497,10 +497,12 @@ func (a *Actor) beginPhase(ctx context.Context) {
 	a.floor = nil
 	a.phaseDone = false
 	a.resetTalkLocked()
+	// Just the name: the host's "进入下一阶段：…" line right above already
+	// says what happened, so the divider only has to mark where.
 	a.appendLocked(domain.Event{
 		Type:    domain.EvPhase,
 		PhaseID: ph.ID,
-		Text:    fmt.Sprintf("进入阶段：%s", ph.Name),
+		Text:    ph.Name,
 		Meta:    map[string]string{"phaseType": ph.Type},
 	})
 	if strings.TrimSpace(ph.DMScript) != "" {
@@ -578,6 +580,14 @@ func (a *Actor) advance(ctx context.Context, gen int) {
 		a.mu.Unlock()
 		return
 	}
+	// The host's move belongs to the host's own line in the transcript, not to a
+	// divider the reader has to interpret: everyone sees who advanced and where to.
+	a.appendLocked(domain.Event{
+		Type:    domain.EvDM,
+		Speaker: "主持人",
+		PhaseID: ph.ID,
+		Text:    fmt.Sprintf("进入下一阶段：%s", ph.Name),
+	})
 	a.persistLocked()
 	a.mu.Unlock()
 	a.beginPhase(a.phaseCtx(ctx))
@@ -1193,20 +1203,9 @@ func (a *Actor) agentSearch(seat domain.Seat, ph *domain.Phase) bool {
 	}
 	a.mu.Unlock()
 
-	// Decide whether the agent volunteers what it just found.
-	a.mu.Lock()
-	shouldReveal := true
-	for _, sid := range pick.Links.Secrets {
-		if sec := a.sc.Tokenize().Secrets[sid]; sec != nil {
-			if !p.ShouldReveal(sec.RevealCost, persona.RevealPressure{RoundNormalised: 0.2}) {
-				shouldReveal = false
-			}
-		}
-	}
-	a.mu.Unlock()
-	if shouldReveal {
-		_ = a.revealClue(seat, pick.ID)
-	}
+	// The find stays private. Evidence is normally opened up by talking about it
+	// during the discussion, so the table only learns what a seat chooses to say;
+	// an explicit reveal is the seat's own call, never a side effect of searching.
 	return true
 }
 

@@ -138,7 +138,7 @@ func (p Persona) Describe() string {
 	fmt.Fprintf(&b, "- 情绪化 %.2f：%s\n", p.Emotionality, band(p.Emotionality,
 		"语气平稳克制",
 		"偶尔带情绪",
-		"有明显情绪起伏和肢体动作描写"))
+		"有明显情绪起伏，语气会跟着情绪走"))
 	for _, r := range p.Rules {
 		fmt.Fprintf(&b, "- %s\n", r)
 	}

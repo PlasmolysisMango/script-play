@@ -40,8 +40,7 @@ export function RoomPage({ code }: { code: string }) {
     onError,
   })
   const addSeat = useMutation({
-    mutationFn: (body: { roleId?: string; personaId?: string; modelId?: string; displayName?: string }) =>
-      api.addSeat(code, body),
+    mutationFn: (body: { roleId?: string; personaId?: string; displayName?: string }) => api.addSeat(code, body),
     onSuccess: applyRoom,
     onError,
   })
@@ -272,7 +271,7 @@ function SeatCard({
   room: Room
   seat: Seat
   personas: { id: string; name: string; style: string }[]
-  onPatch: (body: { roleId?: string; personaId?: string; modelId?: string; displayName?: string; ready?: boolean }) => void
+  onPatch: (body: { roleId?: string; personaId?: string; displayName?: string; ready?: boolean }) => void
   onRemove: () => void
 }) {
   const editable = room.status === 'lobby'
@@ -320,29 +319,21 @@ function SeatCard({
               ))}
           </select>
           {seat.kind === 'agent' ? (
-            <>
-              <select
-                className="input text-xs"
-                value={seat.personaId}
-                onChange={(e) => onPatch({ personaId: e.target.value })}
-                aria-label="性格"
-              >
-                <option value={RANDOM_PERSONA.id}>
-                  {RANDOM_PERSONA.name} · {RANDOM_PERSONA.style}
+            <select
+              className="input text-xs"
+              value={seat.personaId}
+              onChange={(e) => onPatch({ personaId: e.target.value })}
+              aria-label="性格"
+            >
+              <option value={RANDOM_PERSONA.id}>
+                {RANDOM_PERSONA.name} · {RANDOM_PERSONA.style}
+              </option>
+              {personas.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name} · {p.style}
                 </option>
-                {personas.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name} · {p.style}
-                  </option>
-                ))}
-              </select>
-              <input
-                className="input text-xs font-mono"
-                value={seat.modelId}
-                placeholder="模型（留空用服务端默认）"
-                onChange={(e) => onPatch({ modelId: e.target.value })}
-              />
-            </>
+              ))}
+            </select>
           ) : null}
         </div>
       ) : (
@@ -361,17 +352,16 @@ function AddAgentForm({
   freeRoles: { id: string; name: string }[]
   personas: { id: string; name: string; style: string }[]
   busy: boolean
-  onSubmit: (body: { roleId?: string; personaId?: string; modelId?: string; displayName?: string }) => void
+  onSubmit: (body: { roleId?: string; personaId?: string; displayName?: string }) => void
 }) {
   const [roleId, setRoleId] = useState('')
   const [personaId, setPersonaId] = useState(RANDOM_PERSONA.id)
-  const [model, setModel] = useState('')
   const chosen = useMemo(() => freeRoles.find((r) => r.id === roleId), [freeRoles, roleId])
 
   return (
     <div className="mt-4 rounded-xl border border-line/70 bg-ink/40 p-3">
       <p className="mb-2 text-xs font-medium uppercase tracking-wide text-slate-400">添加 AI 座位</p>
-      <div className="grid gap-2 sm:grid-cols-3">
+      <div className="grid gap-2 sm:grid-cols-2">
         <select className="input text-xs" value={roleId} onChange={(e) => setRoleId(e.target.value)} aria-label="AI 角色">
           <option value="">（随机空闲角色）</option>
           {freeRoles.map((r) => (
@@ -388,12 +378,6 @@ function AddAgentForm({
             </option>
           ))}
         </select>
-        <input
-          className="input text-xs font-mono"
-          value={model}
-          onChange={(e) => setModel(e.target.value)}
-          placeholder="模型（可选）"
-        />
       </div>
       <button
         type="button"
@@ -403,7 +387,6 @@ function AddAgentForm({
           onSubmit({
             roleId: roleId || undefined,
             personaId: personaId || undefined,
-            modelId: model.trim() || undefined,
             displayName: chosen ? `AI·${chosen.name}` : undefined,
           })
           setRoleId('')
