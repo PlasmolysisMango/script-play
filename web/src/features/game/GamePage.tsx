@@ -74,14 +74,6 @@ export function GamePage({ code }: { code: string }) {
   const isHost = state?.visible.self.isHost ?? false
   const phase = state?.visible.phase
   const floorMine = !!state?.floor && state.floor.seatId === seatId
-  // A phase is entered, not skipped, and the button should say where to. The
-  // list is already ordered, so the next one is simply the neighbour of the
-  // current entry.
-  const nextPhase = useMemo(() => {
-    const list = state?.phases ?? []
-    const at = list.findIndex((p) => p.status === 'current')
-    return at >= 0 ? (list[at + 1] ?? null) : null
-  }, [state?.phases])
 
   // Lines that arrived before this page opened only exist in the snapshot, so
   // the host's opening monologue would be silent. Read the newest one once,
@@ -261,6 +253,7 @@ export function GamePage({ code }: { code: string }) {
           lines={lines}
           selfSeatId={seatId}
           onReply={isSpectator ? undefined : (id) => setReplyTo(id === replyTo ? '' : id)}
+          onAdvance={isHost && state.status === 'running' ? () => send({ type: 'host.skip' }) : undefined}
         />
 
         {state.status === 'finished' ? (
@@ -374,32 +367,6 @@ export function GamePage({ code }: { code: string }) {
           </ul>
         </div>
 
-        {isHost ? (
-          <div className="card space-y-2">
-            <SectionTitle
-              aside={
-                <Hint
-                  align="right"
-                  text="推进后会以主持人身份写进发言记录，所有人都会看到「进入下一阶段：X」。有人掉线、或本阶段没什么可做时用它。AI 座位的发言与搜证由服务端驱动。"
-                />
-              }
-            >
-              主持人
-            </SectionTitle>
-            <button
-              type="button"
-              className="btn-primary w-full text-xs"
-              disabled={state.status !== 'running'}
-              onClick={() => send({ type: 'host.skip' })}
-            >
-              <span className="min-w-0 truncate">{nextPhase ? `进入下一阶段：${nextPhase.name}` : '进入下一阶段'}</span>
-            </button>
-            <p className="text-[11px] leading-relaxed text-slate-500">
-              {nextPhase ? '本阶段结束后，下一段流程会接着开始。' : '已经是最后一个阶段，结束后进入复盘。'}
-            </p>
-          </div>
-        ) : null}
-
         {state.votes ? (
           <div className="sheet">
             <SectionTitle>计票</SectionTitle>
@@ -423,23 +390,37 @@ export function GamePage({ code }: { code: string }) {
   )
 }
 
+function isHostWait(text: string): boolean {
+  return text.includes('等待主持人进入下一阶段') || text.includes('进入自由讨论')
+}
+
 function Transcript({
   lines,
   selfSeatId,
   onReply,
+  onAdvance,
 }: {
   lines: Line[]
   selfSeatId: string
   onReply?: (seatId: string) => void
+  /** Host only: put the next-phase action on the line that waits for it. */
+  onAdvance?: () => void
 }) {
   const bottomRef = useRef<HTMLDivElement | null>(null)
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ block: 'end' })
   }, [lines.length])
+  // Only the newest waiting line carries the button: the older ones are history,
+  // and a transcript full of live buttons would be unusable. Free discussion is
+  // waiting in exactly the same sense — it never ends on its own — so its
+  // opening line is the second place the host needs this action.
+  const advanceAt = onAdvance
+    ? lines.reduce((at, l, i) => (l.kind === 'system' && isHostWait(l.text) ? i : at), -1)
+    : -1
   return (
     <div className="scroll-thin flex-1 space-y-2 overflow-y-auto pr-1">
       {lines.length === 0 ? <Empty>对局刚开始，等待主持人开场。</Empty> : null}
-      {lines.map((line) => {
+      {lines.map((line, index) => {
         const style = styleOf(line.kind)
         const tone =
           style.tone === 'phase'
@@ -475,6 +456,11 @@ function Transcript({
               ) : null}
             </div>
             <p className="whitespace-pre-wrap break-words leading-relaxed">{line.text}</p>
+            {index === advanceAt ? (
+              <button type="button" className="btn-primary mt-2 text-xs" onClick={onAdvance}>
+                进入下一阶段
+              </button>
+            ) : null}
           </div>
         )
       })}
@@ -655,7 +641,7 @@ function PhaseActions({
                 {queued >= 0 ? `已排队（第 ${queued + 1} 位）` : '我要发言'}
               </button>
             )}
-            {isHost ? <span className="self-center text-[11px] text-slate-500"> 主持人可在右侧「进入下一阶段」收尾。</span> : null}
+            {isHost ? <span className="self-center text-[11px] text-slate-500"> 主持人可在发言记录里点「进入下一阶段」。</span> : null}
           </div>
         ) : null}
         <QueueList state={state} seatId={seatId} />
