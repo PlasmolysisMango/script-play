@@ -81,8 +81,8 @@ export function RoomPage({ code }: { code: string }) {
     <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_340px]">
       <section className="space-y-5">
         <div className="card">
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div>
+          <div className="flex flex-wrap items-start justify-between gap-2">
+            <div className="min-w-0">
               <p className="text-xs uppercase tracking-widest text-slate-500">房间号</p>
               <p className="font-mono text-2xl tracking-[0.3em] text-accent">{room.code}</p>
               <h1 className="mt-1 text-lg font-semibold">{room.name || room.scriptTitle || '未命名房间'}</h1>
@@ -93,14 +93,16 @@ export function RoomPage({ code }: { code: string }) {
                 {isUnlimitedSpeech(room.speechSeconds) ? '' : `（${room.autoSkip ? '超时自动跳过' : '等主持人推进'}）`}
               </p>
             </div>
-            <div className="flex flex-col items-end gap-2">
+            {/* Status, host badge and copy used to be three stacked rows on a
+                phone; side by side they cost one line. */}
+            <div className="flex flex-wrap items-center gap-2">
               <Tag tone={room.status === 'running' ? 'green' : room.status === 'finished' ? 'slate' : 'blue'}>
                 {room.status === 'running' ? '对局进行中' : room.status === 'finished' ? '已结束' : '等待开局'}
               </Tag>
               {room.host ? <Tag tone="amber">我是主持人</Tag> : mySeat ? <Tag>我的座位：{mySeat.displayName}</Tag> : null}
               <button
                 type="button"
-                className="btn-ghost text-xs"
+                className="btn-ghost px-3 text-xs"
                 onClick={() => {
                   void navigator.clipboard?.writeText(room.code)
                   notify('房间号已复制，发给朋友一起入座')

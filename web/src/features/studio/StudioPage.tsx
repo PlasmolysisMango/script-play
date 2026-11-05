@@ -33,6 +33,7 @@ function parseDraft(text: string): ScriptBody | null {
  */
 export function StudioPage() {
   const notify = useApp((s) => s.notify)
+  const navigate = useApp((s) => s.navigate)
   const queryClient = useQueryClient()
 
   const [jsonText, setJsonText] = useState('')
@@ -223,7 +224,20 @@ export function StudioPage() {
     <div className="grid grid-cols-1 gap-5 lg:grid-cols-[340px_minmax(0,1fr)]">
       <aside className="scroll-thin min-w-0 space-y-4 self-start lg:max-h-[calc(100vh-6rem)] lg:overflow-y-auto">
         <div className="sheet">
-          <SectionTitle aside={<button type="button" className="btn-ghost text-xs" onClick={() => refreshScripts()}>刷新</button>}>
+          <SectionTitle
+            aside={
+              <div className="flex items-center gap-2">
+                {/* The studio opens from the admin console, so it needs a way back
+                    that is not a top-level tab. */}
+                <button type="button" className="btn-ghost text-xs" onClick={() => navigate('admin')}>
+                  ← 返回管理台
+                </button>
+                <button type="button" className="btn-ghost text-xs" onClick={() => refreshScripts()}>
+                  刷新
+                </button>
+              </div>
+            }
+          >
             剧本库
           </SectionTitle>
           {scripts.isLoading ? <Spinner /> : null}

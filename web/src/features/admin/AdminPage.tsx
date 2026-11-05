@@ -55,7 +55,7 @@ export function AdminPage() {
           ))}
         </div>
         <button type="button" className="btn-primary mt-3 w-full text-xs" onClick={() => navigate('studio')}>
-          剧本导入与编辑
+          进入剧本工作台
         </button>
         <p className="mt-2 text-[11px] leading-relaxed text-slate-500">
           剧本库由管理员维护：普通账号只能选择已发布的剧本建房，不能导入或修改。
