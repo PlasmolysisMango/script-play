@@ -31,9 +31,12 @@ export function Hint({
       </button>
       <span
         role="tooltip"
-        className={`pointer-events-none absolute top-full z-30 mt-1.5 w-64 max-w-[80vw] rounded-lg border border-line bg-panel px-3 py-2 text-xs font-normal leading-relaxed text-slate-300 shadow-lg transition-opacity ${
+        // Only laid out while it is being read. An absolutely positioned box that
+        // is merely transparent still widens the document, and a 16rem box next
+        // to a hint near the right edge made a phone scroll sideways 45px.
+        className={`pointer-events-none absolute top-full z-30 mt-1.5 w-64 max-w-[80vw] rounded-lg border border-line bg-panel px-3 py-2 text-xs font-normal leading-relaxed text-slate-300 shadow-lg ${
           align === 'right' ? 'right-0' : 'left-0'
-        } ${open ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}
+        } ${open ? 'block' : 'hidden group-hover:block'}`}
       >
         {text}
       </span>
