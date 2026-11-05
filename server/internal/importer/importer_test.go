@@ -135,6 +135,60 @@ func TestNormalizeWritesStrategyDefaults(t *testing.T) {
 	}
 }
 
+// A script with no phases is the shortest thing an author can import: just a
+// cast and a few clues. normalize owes them a runnable flow, and the validator
+// insists that flow opens with reading, so the generated one must too.
+func TestNormalizeBuildsAPublishableFlow(t *testing.T) {
+	svc, _ := newTestService(t)
+	raw := `{
+	  "schemaVersion": 1,
+	  "meta": {"title": "空流程", "playerCount": {"min": 2, "max": 2}},
+	  "roles": [
+	    {"id": "r1", "name": "甲", "public": {"intro": "甲"}, "private": {"script": "甲本"}},
+	    {"id": "r2", "name": "乙", "public": {"intro": "乙"}, "private": {"script": "乙本"}}
+	  ],
+	  "clues": [
+	    {"id": "c1", "title": "刀", "content": "一把刀"},
+	    {"id": "c2", "title": "血书", "content": "半张纸"}
+	  ]
+	}`
+	rec, verrs, err := svc.FromJSON("u1", []byte(raw))
+	if err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	if len(verrs) != 0 {
+		t.Fatalf("generated flow must validate, got %v", verrs)
+	}
+	phases := rec.Body.Phases
+	if phases[0].Type != domain.PhaseReading {
+		t.Fatalf("phases[0].type = %q, want reading", phases[0].Type)
+	}
+	if phases[len(phases)-1].Type != domain.PhaseReveal {
+		t.Fatalf("last phase = %q, want reveal", phases[len(phases)-1].Type)
+	}
+	search := 0
+	for _, p := range phases {
+		if p.Type != domain.PhaseSearch {
+			continue
+		}
+		search++
+		// An empty pool means search finds nothing at the table, so the
+		// generated phase has to point at every clue.
+		if len(p.CluePool) != len(rec.Body.Clues) {
+			t.Fatalf("cluePool = %v, want all %d clues", p.CluePool, len(rec.Body.Clues))
+		}
+	}
+	if search == 0 {
+		t.Fatal("generated flow has no search phase")
+	}
+	if verrs, err := svc.Publish(rec); err != nil || len(verrs) != 0 {
+		t.Fatalf("publish: %v %v", err, verrs)
+	}
+	if rec.Status != "published" {
+		t.Fatalf("status = %q, want published", rec.Status)
+	}
+}
+
 // A draft may be saved with holes in it; a published script may not, and saving
 // one is what produces the next version.
 func TestSaveBumpsPublishedAndKeepsDraftForgiving(t *testing.T) {

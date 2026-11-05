@@ -101,12 +101,15 @@ func normalize(sc *domain.Script) {
 		for _, c := range sc.Clues {
 			pool = append(pool, c.ID)
 		}
+		// Reading first, because the validator insists on it and because it is
+		// true: every script opens with the role books in hand.
 		sc.Phases = []domain.Phase{
-			{ID: "p1", Type: domain.PhaseOpening, Name: "开场"},
-			{ID: "p2", Type: domain.PhaseSearch, Name: "第一轮搜证", Round: 1, PerPlayerPick: 2, CluePool: pool},
-			{ID: "p3", Type: domain.PhaseDiscussion, Name: "第一轮讨论", Round: 1, SpeechPerPlayer: 2, Order: domain.OrderRoundRobin},
-			{ID: "p4", Type: domain.PhaseVote, Name: "投票"},
-			{ID: "p5", Type: domain.PhaseReveal, Name: "复盘"},
+			{ID: "p1", Type: domain.PhaseReading, Name: "阅读剧本"},
+			{ID: "p2", Type: domain.PhaseDiscussion, Name: "自我介绍与案情讨论", Round: 1, SpeechPerPlayer: 1, Order: domain.OrderRoundRobin},
+			{ID: "p3", Type: domain.PhaseSearch, Name: "第一轮搜证", Round: 1, PerPlayerPick: 2, SearchMode: domain.SearchPick, Order: domain.OrderRoundRobin, CluePool: pool},
+			{ID: "p4", Type: domain.PhaseDiscussion, Name: "第一轮公聊", Round: 1, SpeechPerPlayer: 2, Order: domain.OrderRoundRobin},
+			{ID: "p5", Type: domain.PhaseVote, Name: "投票"},
+			{ID: "p6", Type: domain.PhaseReveal, Name: "复盘"},
 		}
 	}
 	for i := range sc.Phases {

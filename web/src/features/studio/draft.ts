@@ -1,0 +1,239 @@
+/**
+ * The script body as the studio edits it.
+ *
+ * These are the same fields docs/script.schema.json declares, but every one of
+ * them is optional here: a draft is edited field by field, and a half-typed role
+ * must not disappear because it does not validate yet. Only the server decides
+ * what a valid script is.
+ */
+
+export type Secret = { id?: string; text?: string; revealCost?: number }
+
+export type Role = {
+  id?: string
+  name?: string
+  personaId?: string
+  public?: { intro?: string; appearance?: string }
+  private?: {
+    script?: string
+    secrets?: Secret[]
+    goals?: string[]
+    knownFactIds?: string[]
+  }
+}
+
+export type Clue = {
+  id?: string
+  title?: string
+  location?: string
+  back?: string
+  content?: string
+  ownerRoleId?: string
+  isPublic?: boolean
+  imageUrl?: string
+  links?: { roles?: string[]; secrets?: string[]; facts?: string[] }
+}
+
+export type Phase = {
+  id?: string
+  type?: string
+  name?: string
+  round?: number
+  dmScript?: string
+  cluePool?: string[]
+  perPlayerPick?: number
+  speechPerPlayer?: number
+  searchMode?: string
+  order?: string
+  timeoutSec?: number
+}
+
+export type Fact = { id?: string; text?: string }
+
+export type Truth = {
+  killerRoleId?: string
+  method?: string
+  motive?: string
+  timeline?: string[]
+  summary?: string
+}
+
+export type Meta = {
+  title?: string
+  author?: string
+  summary?: string
+  difficulty?: string
+  tags?: string[]
+  playerCount?: { min?: number; max?: number }
+  durationMin?: number
+}
+
+export type ScriptBody = {
+  schemaVersion?: number
+  meta?: Meta
+  truth?: Truth
+  phases?: Phase[]
+  roles?: Role[]
+  clues?: Clue[]
+  facts?: Fact[]
+}
+
+export const PHASE_TYPES = [
+  ['reading', '阅读剧本'],
+  ['opening', '开场'],
+  ['search', '搜证'],
+  ['discussion', '讨论'],
+  ['vote', '投票'],
+  ['reveal', '揭晓'],
+] as const
+
+export const PHASE_ORDERS = [
+  ['round_robin', '轮流（按入座）'],
+  ['random', '随机'],
+  ['host_assigned', '主持人指定'],
+] as const
+
+export const SEARCH_MODES = [
+  ['pick', '自选（看标题挑）'],
+  ['random', '随机抽取（抽到什么算什么）'],
+] as const
+
+export const DIFFICULTIES = [
+  ['easy', '简单'],
+  ['medium', '中等'],
+  ['hard', '困难'],
+] as const
+
+/** One line of what the chosen order means at the table. */
+export function orderHint(order?: string): string {
+  switch (order) {
+    case 'random':
+      return '阶段开始时随机排一次，之后按这个顺序进行'
+    case 'host_assigned':
+      return '阶段开始由主持人一次性排好整轮顺序'
+    default:
+      return '按入座顺序轮流，主持人优先'
+  }
+}
+
+/**
+ * The skeleton a new draft starts from: metadata plus the phases the engine
+ * expects. Reading comes first because every script opens with the role books in
+ * hand; roles and clues stay empty for the author to fill in.
+ */
+export function blankScript(): ScriptBody {
+  return {
+    schemaVersion: 1,
+    meta: { title: '未命名剧本', playerCount: { min: 4, max: 6 }, tags: [] },
+    truth: { killerRoleId: '' },
+    roles: [],
+    clues: [],
+    facts: [],
+    phases: [
+      { id: 'p1', type: 'reading', name: '阅读剧本' },
+      { id: 'p2', type: 'discussion', name: '自我介绍与案情讨论', round: 1, speechPerPlayer: 1, order: 'round_robin' },
+      { id: 'p3', type: 'search', name: '第一轮搜证', round: 1, perPlayerPick: 2, order: 'round_robin', searchMode: 'pick' },
+      { id: 'p4', type: 'discussion', name: '第一轮公聊', round: 1, speechPerPlayer: 2, order: 'round_robin' },
+      { id: 'p5', type: 'vote', name: '投票' },
+      { id: 'p6', type: 'reveal', name: '复盘' },
+    ],
+  }
+}
+
+/** `role_1`, `clue_3`… never colliding with what the draft already uses. */
+export function nextId(prefix: string, taken: (string | undefined)[]): string {
+  let max = 0
+  const withSep = new RegExp(`^${prefix}_(\\d+)$`)
+  const bare = new RegExp(`^${prefix}(\\d+)$`)
+  let bareStyle = false
+  for (const id of taken) {
+    if (!id) continue
+    const sep = withSep.exec(id)
+    if (sep) max = Math.max(max, Number(sep[1]))
+    const plain = bare.exec(id)
+    if (plain) {
+      bareStyle = true
+      max = Math.max(max, Number(plain[1]))
+    }
+  }
+  // Phases are written `p1` in every published script; roles and clues carry the
+  // underscore. Follow whatever the draft already uses so ids stay readable.
+  return bareStyle ? `${prefix}${max + 1}` : `${prefix}_${max + 1}`
+}
+
+export function blankRole(roles: Role[]): Role {
+  return {
+    id: nextId('role', roles.map((r) => r.id)),
+    name: '',
+    public: { intro: '', appearance: '' },
+    private: { script: '', secrets: [], goals: [], knownFactIds: [] },
+  }
+}
+
+export function blankClue(clues: Clue[]): Clue {
+  return {
+    id: nextId('clue', clues.map((c) => c.id)),
+    title: '',
+    location: '',
+    back: '',
+    content: '',
+    isPublic: false,
+    links: { roles: [], secrets: [], facts: [] },
+  }
+}
+
+export function blankPhase(phases: Phase[]): Phase {
+  return {
+    id: nextId('p', phases.map((p) => p.id)),
+    type: 'discussion',
+    name: '新阶段',
+    round: 1,
+    order: 'round_robin',
+    speechPerPlayer: 1,
+  }
+}
+
+export function blankFact(facts: Fact[]): Fact {
+  return { id: nextId('fact', facts.map((f) => f.id)), text: '' }
+}
+
+export function blankSecret(secrets: Secret[]): Secret {
+  return { id: nextId('secret', secrets.map((s) => s.id)), text: '', revealCost: 0.5 }
+}
+
+export function replaceAt<T>(list: T[], index: number, value: T): T[] {
+  return list.map((item, i) => (i === index ? value : item))
+}
+
+export function removeAt<T>(list: T[], index: number): T[] {
+  return list.filter((_, i) => i !== index)
+}
+
+export function moveAt<T>(list: T[], index: number, delta: number): T[] {
+  const target = index + delta
+  if (target < 0 || target >= list.length) return list
+  const next = list.slice()
+  next[index] = list[target]
+  next[target] = list[index]
+  return next
+}
+
+/** Comma / ideographic comma separated ids, the way authors paste them. */
+export function splitIds(text: string): string[] {
+  return text
+    .split(/[，,、\s]+/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+}
+
+/** Every secret id in the script, annotated with the role that owns it. */
+export function secretIndex(roles: Role[]): { id: string; roleName: string; text: string }[] {
+  const out: { id: string; roleName: string; text: string }[] = []
+  for (const role of roles) {
+    for (const secret of role.private?.secrets ?? []) {
+      if (!secret.id) continue
+      out.push({ id: secret.id, roleName: role.name || role.id || '', text: secret.text ?? '' })
+    }
+  }
+  return out
+}

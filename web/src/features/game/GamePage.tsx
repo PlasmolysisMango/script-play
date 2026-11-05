@@ -4,6 +4,7 @@ import { useApp } from '../../store/app'
 import { useGame } from '../../store/game'
 import { RoomSocket } from '../../realtime/client'
 import { Empty, Hint, SectionTitle, Spinner, StatusDot, Tag } from '../../components/ui'
+import { Markdown } from '../../components/Markdown'
 import { styleOf, type Line } from '../../lib/transcript'
 import { ReadingPage } from './ReadingPage'
 import { narrationFor, speak, stopSpeaking, warmVoices, type VoiceCapabilities } from '../../voice'
@@ -867,7 +868,21 @@ function RolePanel({
                     公开
                   </button>
                 </div>
-                <p className="mt-1 whitespace-pre-wrap leading-relaxed text-slate-400">{c.content}</p>
+                {/* Clue prose is authored in the studio and may carry markdown and a
+                    picture: a scan of the letter *is* the clue. */}
+                <div className="mt-1">
+                  <Markdown text={c.content} />
+                  {c.imageUrl ? (
+                    <a href={c.imageUrl} target="_blank" rel="noreferrer">
+                      <img
+                        src={c.imageUrl}
+                        alt={c.title}
+                        loading="lazy"
+                        className="mt-2 max-h-64 w-auto rounded-lg border border-line/70 bg-panel"
+                      />
+                    </a>
+                  ) : null}
+                </div>
               </li>
             ))}
           </ul>
@@ -883,7 +898,19 @@ function RolePanel({
             {visible.publicClues.map((c) => (
               <li key={c.id} className="rounded-xl border border-emerald-500/30 px-3 py-2">
                 <p className="text-sm text-emerald-100">{c.title}</p>
-                <p className="mt-1 whitespace-pre-wrap leading-relaxed text-slate-400">{c.content}</p>
+                <div className="mt-1">
+                  <Markdown text={c.content} />
+                  {c.imageUrl ? (
+                    <a href={c.imageUrl} target="_blank" rel="noreferrer">
+                      <img
+                        src={c.imageUrl}
+                        alt={c.title}
+                        loading="lazy"
+                        className="mt-2 max-h-64 w-auto rounded-lg border border-line/70 bg-panel"
+                      />
+                    </a>
+                  ) : null}
+                </div>
               </li>
             ))}
           </ul>

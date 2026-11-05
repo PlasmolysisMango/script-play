@@ -175,6 +175,16 @@ export const api = {
   async deleteScript(id: string): Promise<void> {
     await request(`/api/scripts/${id}`, { method: 'DELETE' })
   },
+  /**
+   * Stores one picture beside the script and returns the relative URL to embed.
+   * The URL is what clue.imageUrl (or a markdown image link) holds, so the same
+   * body works locally, behind a proxy and in an exported copy.
+   */
+  async uploadScriptImage(id: string, file: File): Promise<{ url: string; name: string; size: number; mime: string }> {
+    const form = new FormData()
+    form.append('file', file)
+    return request(`/api/scripts/${id}/media`, { method: 'POST', body: form })
+  },
   async seedSample(): Promise<ScriptResponse> {
     return request<ScriptResponse>('/api/scripts/sample', { method: 'POST' })
   },

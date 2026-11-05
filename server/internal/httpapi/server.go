@@ -73,6 +73,10 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /api/scripts/{id}/publish", s.withAdmin(s.handlePublishScript))
 	m.HandleFunc("POST /api/scripts/{id}/draft", s.withAdmin(s.handleForkScript))
 	m.HandleFunc("DELETE /api/scripts/{id}", s.withAdmin(s.handleDeleteScript))
+	// A clue is often a picture. Uploads land in data/media/<script id>/ and the
+	// body stores the relative URL, so a script stays portable.
+	m.HandleFunc("POST /api/scripts/{id}/media", s.withAdmin(s.handleUploadScriptMedia))
+	m.HandleFunc("GET /media/{id}/{name}", s.handleMediaFile)
 
 	// Raw material is archived, not parsed: uploading drops the original in
 	// data/inbox for a developer to convert into the standard JSON offline.
@@ -196,7 +200,8 @@ func decode(r *http.Request, v any) error {
 func spaHandler(files http.Handler, dir string, api *http.ServeMux) http.Handler {
 	root := filepath.Clean(dir)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/api/") || strings.HasPrefix(r.URL.Path, "/ws/") {
+		if strings.HasPrefix(r.URL.Path, "/api/") || strings.HasPrefix(r.URL.Path, "/ws/") ||
+			strings.HasPrefix(r.URL.Path, "/media/") {
 			api.ServeHTTP(w, r)
 			return
 		}

@@ -1,5 +1,6 @@
 import { useEffect, useMemo } from 'react'
-import { parseRichText, type Inline } from '../../lib/richtext'
+import { InlineRuns } from '../../components/Markdown'
+import { parseRichText } from '../../lib/richtext'
 import type { OwnRole } from '../../types/schema'
 
 /**
@@ -89,14 +90,53 @@ export function ReadingPage({ role, onClose }: { role: OwnRole; onClose: () => v
                     {b.time}
                   </span>
                   <p className="min-w-0 flex-1">
-                    <Runs parts={b.parts} />
+                    <InlineRuns parts={b.parts} />
                   </p>
                 </div>
               )
             }
+            // The library gained lists, quotes and fenced code so a clue card and
+            // a role book can be written the same way. Book typography stays: a
+            // script is read sitting down, not skimmed like a dashboard.
+            if (b.kind === 'quote') {
+              return (
+                <blockquote key={i} className="border-l-2 border-line pl-3 text-slate-400">
+                  <InlineRuns parts={b.parts} />
+                </blockquote>
+              )
+            }
+            if (b.kind === 'ul') {
+              return (
+                <ul key={i} className="list-disc space-y-1 pl-5 marker:text-accent/70">
+                  {b.items.map((item, j) => (
+                    <li key={j}>
+                      <InlineRuns parts={item} />
+                    </li>
+                  ))}
+                </ul>
+              )
+            }
+            if (b.kind === 'ol') {
+              return (
+                <ol key={i} start={b.start} className="list-decimal space-y-1 pl-5 marker:text-accent/70">
+                  {b.items.map((item, j) => (
+                    <li key={j}>
+                      <InlineRuns parts={item} />
+                    </li>
+                  ))}
+                </ol>
+              )
+            }
+            if (b.kind === 'code') {
+              return (
+                <pre key={i} className="scroll-thin overflow-x-auto rounded-lg border border-line bg-ink/60 p-3 font-mono text-xs leading-relaxed text-slate-300">
+                  <code>{b.text}</code>
+                </pre>
+              )
+            }
             return (
               <p key={i} className="whitespace-pre-wrap">
-                <Runs parts={b.parts} />
+                <InlineRuns parts={b.parts} />
               </p>
             )
           })}
@@ -110,21 +150,5 @@ export function ReadingPage({ role, onClose }: { role: OwnRole; onClose: () => v
         </div>
       </div>
     </div>
-  )
-}
-
-function Runs({ parts }: { parts: Inline[] }) {
-  return (
-    <>
-      {parts.map((p, i) =>
-        p.bold ? (
-          <strong key={i} className="font-semibold text-strong">
-            {p.text}
-          </strong>
-        ) : (
-          <span key={i}>{p.text}</span>
-        ),
-      )}
-    </>
   )
 }

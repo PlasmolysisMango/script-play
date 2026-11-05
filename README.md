@@ -35,26 +35,200 @@ cd server && SP_ADMIN_USERNAME=admin SP_ADMIN_PASSWORD='换成你的密码' go r
    `data/inbox/<时间戳>-raw_<随机>.<ext>`，面板上直接显示每份文件的服务端绝对路径。不解压、不 OCR、不调用
    LLM。
 2. **转成标准 JSON**：按 `docs/script.schema.json` 把原件写成剧本 JSON（仓库里已转好的放 `scripts/`，
-   例如 `scripts/K7-星火号.json`），然后二选一：
-   工作台「新建空白草稿」拿一份带默认阶段的骨架（reading → 讨论 → 搜证 → 公聊 → 投票 → 复盘）
-   逐字段填，或「粘贴 JSON」整份导入。格式不对也能存：导入返回的 `errors` 就是待修清单。
-3. **校对与发布**：左侧点中任一剧本即可编辑，草稿与已发布没有区别（已发布剧本保存即发布新版本，
+   例如 `scripts/K7-星火号.json`）。字段、默认值与校验规则见[导入剧本规范](#导入剧本规范)。
+3. **录入**：三种入口，最终落到同一份结构、走同一套校验——
+   - 工作台「新建空白草稿」拿一份带默认阶段的骨架（reading → 讨论 → 搜证 → 公聊 → 投票 → 复盘），
+     在「可视化」模式里逐字段填；
+   - 「粘贴 JSON」整份导入，之后照样可以在可视化模式里继续改；
+   - `POST /api/scripts` 直接提交 JSON（脚本化批量导入）。
+   格式不对也能存：导入返回的 `errors` 就是待修清单。
+4. **可视化编辑**：左侧点中任一剧本即可编辑，草稿与已发布没有区别（已发布剧本保存即发布新版本，
    版本号 +1；进行中的对局仍用开局时那一版，新开的房间用新版本；已发布剧本只接受能通过校验的内容）。
-   「结构化」模式改基础信息（标题/简介/人数/难度/时长/标签）和**阶段与轮次**
-   （类型、名称、轮次、顺序策略、搜证方式、搜证/发言次数、超时、线索池、主持人手册，可上下移动与增删）；
-   「JSON」模式改角色、线索、真相、事实表等复杂结构。
-   发布前校验：第一个阶段必须是 `reading`、必须有 `reveal`、搜证/讨论阶段的次数 > 0 等。
-4. **阶段策略**（都是剧本字段，对局里只读）：
-   - `order`：`round_robin` 按入座顺序（主持人优先）、`random` 阶段开始时随机排一次、
-     `host_assigned` 阶段开始时挂起，等主持人在对局页一次性排好整轮顺序；
-   - `searchMode`：`pick` 看标题自选、`random` 只给「随机抽取」按钮，抽到什么算什么（线索内容仍只有抽取者可见）。
-   两个策略对搜证与讨论阶段都生效；一次行动一轮，配额用尽才轮到下一位。
+   编辑器分六段，覆盖 schema 的全部字段，列表项都能增删与上下移动：
+   - **基础信息**：标题、作者、简介、人数上下限、难度、时长、标签；
+   - **阶段**：类型、名称、轮次、顺序策略、搜证方式、搜证/发言次数、超时、线索池、主持人手册；
+   - **角色**：公开人设、公开介绍、私密剧本、秘密表（`revealCost`）、本局目标、初始已知事实；
+   - **线索**：标题、卡背、地点、归属角色、是否公开、正文、配图、指向的角色/秘密/事实；
+   - **事实表**与**真相**（凶手、手法、动机、时间线、复盘全文）。
+   角色本、线索正文、真相、主持人手册都是 Markdown 输入框，带「编辑 / 预览」切换和「插图」按钮；
+   「JSON」模式保留，用来整份替换或粘贴大段文本。
+5. **配图**：编辑器里的「上传」调用 `POST /api/scripts/{id}/media`，图片落到 `data/media/<剧本 id>/`，
+   写进 `imageUrl` 的是相对路径 `/media/<剧本 id>/<文件名>`——前后端同源托管，换域名或端口都不用改剧本；
+   外部图床的绝对 URL 也可以直接填。单张上限 8 MB，只收 png/jpg/jpeg/webp/gif，
+   服务端按扩展名发 `Content-Type` 并加 `nosniff`，不会把改名成 `.png` 的 HTML 当图片发出去。
+6. **发布**：「校验并发布」跑完整规则，失败返回 422 + 逐字段 `errors`，草稿原样保留。
+
+正文支持的 Markdown 子集（`web/src/lib/richtext.ts`，零依赖；未识别的标记原样显示，不会被吞掉）：
+
+| 写法 | 效果 |
+|---|---|
+| `## 标题` / `### 小标题` | 段标题 / 小标题 |
+| `**粗体**`、`*斜体*`、`` `代码` `` | 行内强调 |
+| `[文字](https://…)` | 链接（新窗口打开） |
+| `- 条目` / `1. 条目` | 无序 / 有序列表 |
+| `> 引用` | 引用块 |
+| ` ```lang ` … ` ``` ` | 代码块 |
+| `---` | 分隔线 |
+| `![说明](图片地址)` | 独占一行的配图（地址可以是 `/media/…` 或外链） |
+| `**21:30** 做了什么` | 时间线条目（角色本与复盘里按行排版） |
+
+阶段策略（都是剧本字段，对局里只读）：
+
+- `order`：`round_robin` 按入座顺序（主持人优先）、`random` 阶段开始时随机排一次、
+  `host_assigned` 阶段开始时挂起，等主持人在对局页一次性排好整轮顺序；
+- `searchMode`：`pick` 看标题自选、`random` 只给「随机抽取」按钮，抽到什么算什么（线索内容仍只有抽取者可见）。
+
+两个策略对搜证与讨论阶段都生效；一次行动一轮，配额用尽才轮到下一位。
 
 管理台（导航栏「管理台」）：
 
 - 账号：列表（含角色、剧本数、注册时间、最近登录），可为任意账号重置为一次性临时密码。
   密码是 bcrypt 单向哈希，**看不到原密码**，这是唯一可行的「找回」方式；
 - 房间：列表（剧本、房主、状态、人数），可「结束」（保留复盘）或「删除」（连记录一起删）。
+
+## 导入剧本规范
+
+一份剧本 = 一个 JSON 对象，schema 的权威定义在 [`docs/script.schema.json`](docs/script.schema.json)，
+校验规则在 `server/internal/domain/validate.go`。服务端只做三件事：存草稿、校验、存已发布版本——
+它**不解压、不 OCR、不调用 LLM**，docx / pdf / 照片必须先由人转成下面的结构。
+
+### 1. 三条录入路径，一套校验
+
+| 路径 | 入口 | 适用 |
+|---|---|---|
+| 可视化编辑 | 工作台「新建空白草稿」→ 六个分区逐字段填 | 手写新剧本、边校对边改、需要上传配图 |
+| 粘贴 JSON | 工作台「粘贴 JSON」→「导入为草稿」 | 已有转写好的 `scripts/*.json` |
+| HTTP | `POST /api/scripts`，请求体即剧本 JSON | 脚本化批量导入、CI 造数据 |
+
+三者都落进同一种记录，导入后可以在「可视化」与「JSON」两个模式之间来回切换，不会丢字段。
+
+### 2. 顶层结构与体积
+
+```json
+{
+  "schemaVersion": 1,
+  "meta": { "title": "...", "playerCount": { "min": 4, "max": 6 } },
+  "truth": { "killerRoleId": "r2" },
+  "phases": [],
+  "roles": [],
+  "clues": [],
+  "facts": []
+}
+```
+
+| 约束 | 值 |
+|---|---|
+| `schemaVersion` | 必须是 `1`；缺省按 1 处理，其他值报错 |
+| 请求体 | ≤ **8 MB**（`POST /api/scripts` 与 `PUT /api/scripts/{id}` 均如此） |
+| 图片 | 单张 ≤ **8 MB**，只接受 `.png` `.jpg` `.jpeg` `.webp` `.gif` |
+| 未知字段 | 报错：schema 是 `additionalProperties: false`，拼错的字段名不会被静默丢弃 |
+| 必填顶层键 | `schemaVersion` `meta` `truth` `phases` `roles` `clues`（`facts` 可省） |
+
+### 3. 字段与默认值
+
+保存前 `normalize` 会补齐下列值，所以「最小可用剧本」比 schema 看起来宽松：
+
+| 位置 | 缺省时自动填 |
+|---|---|
+| `roles[].id` | `r1`、`r2`…（按数组顺序） |
+| `roles[].personaId` | `guarded`（性格预设，留空即用这个） |
+| `roles[].private.script` | 空白时退化为 `public.intro` |
+| `roles[].private.secrets[].id` | `<角色 id>_s<序号>` |
+| `roles[].private.secrets[].revealCost` | `0.7`（0~1，越大越难撬开） |
+| `clues[].id` | `c1`、`c2`… |
+| `phases[].id` / `name` | `p1`… / 用 `type` 当名字 |
+| `phases` 整个为空 | 生成六段：阅读 → 讨论 → 搜证 → 公聊 → 投票 → 复盘；搜证池 = 全部线索 |
+| `phases[].searchMode` / `order`（search 段） | `pick` / `round_robin` |
+| `phases[].order`（discussion 段） | `round_robin` |
+| `meta.playerCount.min` / `max` | `2` / 角色数 |
+
+**字段清单**（`—` 表示可省略）：
+
+| 分组 | 字段 |
+|---|---|
+| `meta` | `title`、`author`—、`summary`—、`difficulty`—（`easy`/`medium`/`hard`/空）、`tags`—、`playerCount{min,max}`、`durationMin`— |
+| `phases[]` | `id`、`type`（`reading`/`opening`/`search`/`discussion`/`vote`/`reveal`）、`name`、`round`—、`dmScript`—（主持人手册，Markdown）、`cluePool`—（线索 id 数组）、`perPlayerPick`—（搜证段必填）、`speechPerPlayer`—（讨论段必填）、`searchMode`—、`order`—、`timeoutSec`— |
+| `roles[]` | `id`、`name`、`personaId`—、`public{intro,appearance}`—、`private{script,secrets[],goals[],knownFactIds[]}` |
+| `clues[]` | `id`、`title`、`content`（Markdown）、`location`—、`back`—（卡背，搜证选项只露这一行）、`ownerRoleId`—、`isPublic`—、`imageUrl`—、`links{roles,secrets,facts}`— |
+| `facts[]` | `id`、`text` |
+| `truth` | `killerRoleId`、`method`—、`motive`—、`timeline[]`—、`summary`—（复盘全文，Markdown） |
+
+`public.intro` 是开局所有人可见的一句话，`private.script` 是该角色的完整角色本（Markdown），
+`truth` 永远不进任何角色的 prompt，只在主持人与复盘里出现。
+
+### 4. 校验规则（发布必须全部通过）
+
+失败时返回 `422 {errors: [{path, message}]}`，`path` 精确到字段，例如 `roles[1].private.script`。
+草稿可以先带着这些错误存在（作为 `warnings` 显示）；**已发布剧本保存时只要有一条不过就整体拒绝**，
+库里仍是旧版本。
+
+| 规则 | `path` |
+|---|---|
+| 只支持 `schemaVersion` 1 | `schemaVersion` |
+| 标题非空 | `meta.title` |
+| 最少人数 > 0，最多人数 ≥ 最少人数 | `meta.playerCount.min` / `.max` |
+| 最多人数 ≤ 角色数 | `meta.playerCount.max` |
+| 至少一个角色 | `roles` |
+| 角色 id 非空且唯一、角色名非空 | `roles[i].id` / `.name` |
+| 每个角色的私密剧本非空 | `roles[i].private.script` |
+| 秘密 id 非空、`revealCost` 在 0~1 | `roles[i].private.secrets[j].*` |
+| `knownFactIds` 里的 id 必须存在于 `facts` | `roles[i].private.knownFactIds` |
+| 线索 id 非空且唯一 | `clues[i].id` |
+| `ownerRoleId` 与 `links.roles` 必须是已存在的角色 id | `clues[i].ownerRoleId` / `.links.roles` |
+| 事实 id 非空 | `facts[i].id` |
+| 凶手角色必须存在（可留空，但复盘会说不出凶手） | `truth.killerRoleId` |
+| 至少一个阶段，阶段 id 非空、类型合法 | `phases` / `phases[i].id` / `.type` |
+| **第一个阶段必须是 `reading`** | `phases[0].type` |
+| **必须有一个 `reveal` 阶段** | `phases` |
+| 搜证段 `perPlayerPick` > 0，`cluePool` 里的 id 必须存在，`searchMode` 合法 | `phases[i].perPlayerPick` / `.cluePool` / `.searchMode` |
+| 讨论段 `speechPerPlayer` > 0 | `phases[i].speechPerPlayer` |
+| `order` 合法（`round_robin`/`random`/`host_assigned`） | `phases[i].order` |
+
+### 5. 阶段流程的硬约束
+
+1. **首段 `reading`、末段 `reveal`**：阅读给角色本，复盘放真相。中间顺序自由（可以有多个搜证/讨论轮）；
+2. **搜证段的 `cluePool` 就是全部可搜范围**：引擎只在当前搜证阶段的池子里发牌，
+   **池子留空 = 这一轮谁都搜不到任何东西**；不在任何池子里、也没标 `isPublic` / `ownerRoleId` 的线索
+   永远不会出现在对局里；
+3. `ownerRoleId` 是私人物品：只有该角色初始可见，且只能由该角色搜到；`isPublic: true` 开局即公共；
+4. `searchMode`：`pick` 玩家看标题自选，`random` 只给「随机抽取」（抽到什么算什么，内容仍只有抽取者可见）；
+5. `order`：`round_robin` 按入座顺序（主持人优先）、`random` 阶段开始时随机排一次、
+   `host_assigned` 进入阶段时挂起，等主持人一次性排好整轮；
+6. 一次行动一轮，配额用尽才轮到下一位；`timeoutSec` 为 0 表示用服务端默认（`SP_FLOOR_TIMEOUT_SEC`）。
+
+### 6. 正文与配图
+
+- 角色本、线索正文、真相复盘、主持人手册都按 Markdown 子集渲染（见上一节的表）；解析器零依赖，
+  未识别的标记原样显示，不会把半行标记当成格式吞掉；
+- `imageUrl` 写相对路径 `/media/<剧本 id>/<文件名>` 最稳：同源托管，换域名/端口不用改剧本；
+  外链绝对 URL 也可以直接填；
+- 图片由 `POST /api/scripts/{id}/media`（`multipart/form-data`，字段 `file`）上传，
+  落到 `data/media/<剧本 id>/`，响应 `{url, name, size, mime}`；
+  `GET /media/{id}/{name}` 负责回放，按扩展名决定 `Content-Type` 并加 `nosniff`；
+- 图片不是必填：线索可以只有文字。
+
+### 7. 版本与发布语义
+
+| 动作 | 效果 |
+|---|---|
+| 保存草稿 | 允许带校验错误，错误变成 `warnings`，版本号不变 |
+| 发布草稿 | 校验通过才置 `published`，版本号 +1；失败 422，状态不变 |
+| 保存已发布 | 必须先通过校验，成功即 `published` + 版本号 +1（一次修订 = 一个新版本） |
+| 已发布重复发布 | 幂等：只再校验一遍，版本号不动 |
+| 另存为副本 | 复制出一份 `draft`，版本号沿用源版本，发布后接着 +1 |
+| 进行中的对局 | 用开局时那一版的深拷贝，管理员改剧本不影响正在跑的房间 |
+| 新开房间 | 绑定最新已发布版本 |
+
+### 8. 发布前自检清单
+
+- [ ] 第一个阶段是 `reading`，最后有一个 `reveal`；
+- [ ] 每个搜证阶段的 `cluePool` 都**非空**，且已把该轮想被搜到的线索全部列进去；
+- [ ] 每条线索都有去处：在某个 `cluePool` 里，或标了 `isPublic` / `ownerRoleId`；
+- [ ] 每个角色的 `private.script` 都写全了（空的本子会被校验拦下）；
+- [ ] `truth.killerRoleId` 指向真实存在的角色，且和线索、秘密对得上；
+- [ ] 人数区间不超过角色数；
+- [ ] 角色本里的 Markdown 在「预览」里看过一遍：标题、时间线、列表没有错位；
+- [ ] 配图能打开（相对 `/media/…` 或外链），且不包含不想提前泄露的信息。
 
 ## 单进程部署（前端 + API 同源）
 

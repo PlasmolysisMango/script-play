@@ -52,3 +52,53 @@ describe('parseRichText', () => {
     expect(blocks[0].kind === 'p' && blocks[0].parts[0].text).toBe('第一段。\n还是第一段。')
   })
 })
+
+describe('markdown blocks', () => {
+  it('reads lists, quotes and fenced code', () => {
+    const blocks = parseRichText(
+      ['线索：', '', '- 甲的口供', '- 乙的口供', '', '> 他一直在说谎。', '', '```ts', 'const x = 1', '```'].join('\n'),
+    )
+    expect(blocks.map((b) => b.kind)).toEqual(['p', 'ul', 'quote', 'code'])
+    const list = blocks[1]
+    expect(list.kind === 'ul' && list.items.length).toBe(2)
+    expect(list.kind === 'ul' && list.items[1][0].text).toBe('乙的口供')
+    const quote = blocks[2]
+    expect(quote.kind === 'quote' && quote.parts[0].text).toBe('他一直在说谎。')
+    const code = blocks[3]
+    expect(code.kind === 'code' && code.text).toBe('const x = 1')
+    expect(code.kind === 'code' && code.lang).toBe('ts')
+  })
+
+  it('numbers an ordered list from its first item', () => {
+    const blocks = parseRichText('3. 第一件事\n4. 第二件事')
+    expect(blocks[0]).toMatchObject({ kind: 'ol', start: 3 })
+    expect(blocks[0].kind === 'ol' && blocks[0].items.length).toBe(2)
+  })
+
+  it('ends an open list when a heading arrives', () => {
+    const blocks = parseRichText('- 甲\n## 第二节')
+    expect(blocks.map((b) => b.kind)).toEqual(['ul', 'h2'])
+  })
+
+  it('does not confuse a rule with a bullet', () => {
+    expect(parseRichText('---')[0].kind).toBe('rule')
+    expect(parseRichText('- 甲')[0].kind).toBe('ul')
+  })
+})
+
+describe('markdown inline', () => {
+  it('marks code, italic and links, keeping bold alongside', () => {
+    expect(parseInline('看 `船票` 和 *潮汐* 与 [地图](/story/map.jpg)')).toEqual([
+      { text: '看 ', bold: false },
+      { text: '船票', bold: false, code: true },
+      { text: ' 和 ', bold: false },
+      { text: '潮汐', bold: false, italic: true },
+      { text: ' 与 ', bold: false },
+      { text: '地图', bold: false, href: '/story/map.jpg' },
+    ])
+  })
+
+  it('keeps a lone asterisk literal', () => {
+    expect(parseInline('他说*然后走了')).toEqual([{ text: '他说*然后走了', bold: false }])
+  })
+})

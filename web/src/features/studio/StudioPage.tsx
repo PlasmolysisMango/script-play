@@ -3,45 +3,19 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, ApiError } from '../../api/client'
 import { useApp } from '../../store/app'
 import { Empty, Field, SectionTitle, Spinner, Tag } from '../../components/ui'
+import { ScriptEditor } from './ScriptEditor'
+import { blankScript, type ScriptBody } from './draft'
 import { validationErrorSchema, type RawMaterial, type ScriptSummary, type ValidationError } from '../../types/schema'
 
 type EditorMode = 'form' | 'json'
 
-/** Loose views of docs/script.schema.json: the form only owns the fields it edits. */
-type PhaseDraft = {
-  id?: string
-  type?: string
-  name?: string
-  round?: number
-  dmScript?: string
-  cluePool?: string[]
-  perPlayerPick?: number
-  speechPerPlayer?: number
-  /** pick = 玩家自选，random = 点「随机抽取」逐条抽 */
-  searchMode?: string
-  /** round_robin / random / host_assigned */
-  order?: string
-  timeoutSec?: number
-}
-
-type MetaDraft = {
-  title?: string
-  author?: string
-  summary?: string
-  difficulty?: string
-  tags?: string[]
-  playerCount?: { min?: number; max?: number }
-  durationMin?: number
-}
-
-type ScriptDraft = { meta?: MetaDraft; phases?: PhaseDraft[] } & Record<string, unknown>
-
-function parseDraft(text: string): ScriptDraft | null {
+/** The editor buffer is text; the form view only needs it parsed. */
+function parseDraft(text: string): ScriptBody | null {
   if (!text.trim()) return null
   try {
     const value: unknown = JSON.parse(text)
     if (!value || typeof value !== 'object' || Array.isArray(value)) return null
-    return value as ScriptDraft
+    return value as ScriptBody
   } catch {
     return null
   }
@@ -51,6 +25,11 @@ function parseDraft(text: string): ScriptDraft | null {
  * Script studio: the server archives raw material but never parses it, so a
  * script starts either as a pasted standard JSON or as an empty skeleton. Both
  * become a draft that must be reviewed and published before a room can use it.
+ *
+ * Everything the schema holds is editable here. The JSON view stays for bulk
+ * edits and for scripts produced elsewhere; the visual view is the normal path,
+ * because adding a role or swapping a clue picture must never require typing
+ * braces.
  */
 export function StudioPage() {
   const notify = useApp((s) => s.notify)
@@ -82,7 +61,7 @@ export function StudioPage() {
   // produces the next version, so the studio never has to fork first.
   const editable = !!selectedSummary && selectedSummary.owner !== false
 
-  // Load the author's draft into the JSON editor once it arrives.
+  // Load the author's draft into the editor once it arrives.
   useEffect(() => {
     const body = detail.data?.script.body
     if (!body) return
@@ -103,7 +82,7 @@ export function StudioPage() {
   })
 
   // A blank draft is the normal path once the server stops parsing: the
-  // skeleton carries the five phases so the editor has something to edit.
+  // skeleton carries the phases so the editor has something to edit.
   const blank = useMutation({
     mutationFn: () => api.createScript(blankScript()),
     onSuccess: (res) => applyCreated((res.script as { id?: string }).id, res.errors, '已新建空白草稿'),
@@ -127,6 +106,20 @@ export function StudioPage() {
     },
     onError: (err) => notify(err instanceof ApiError ? err.message : '删除失败', 'error'),
   })
+
+  // Pictures are uploaded as soon as they are picked: the author sees the real
+  // file in the real place, and the body only ever stores the returned URL.
+  const uploadImage = async (file: File): Promise<string | null> => {
+    if (!selected) return null
+    try {
+      const saved = await api.uploadScriptImage(selected, file)
+      notify(`图片已上传：${saved.name}`)
+      return saved.url
+    } catch (err) {
+      notify(err instanceof ApiError ? err.message : '图片上传失败', 'error')
+      return null
+    }
+  }
 
   const save = useMutation({
     mutationFn: async () => {
@@ -210,6 +203,19 @@ export function StudioPage() {
     },
     onError: (err) => notify(err instanceof ApiError ? err.message : '另存草稿失败', 'error'),
   })
+
+  const remove = async () => {
+    const title = selectedSummary?.title || '这份剧本'
+    if (!window.confirm(`删除《${title}》？\n\n${isDraft ? '草稿删掉就没了。' : '进行中的对局不受影响，但之后不能再用它建房。'}`)) return
+    try {
+      await api.deleteScript(selected)
+      setSelected('')
+      refreshScripts()
+      notify(isDraft ? '草稿已删除' : '剧本已删除')
+    } catch (err) {
+      notify(err instanceof ApiError ? err.message : '删除失败', 'error')
+    }
+  }
 
   const draft = useMemo(() => parseDraft(editor), [editor])
 
@@ -354,24 +360,8 @@ export function StudioPage() {
                 <button type="button" className="btn-ghost" disabled={!editable || fork.isPending} onClick={() => fork.mutate()}>
                   {fork.isPending ? '复制中…' : '另存为副本'}
                 </button>
-                <button
-                  type="button"
-                  className="btn-ghost"
-                  disabled={!isDraft || !editable}
-                  onClick={() => {
-                    void (async () => {
-                      try {
-                        await api.deleteScript(selected)
-                        setSelected('')
-                        refreshScripts()
-                        notify('草稿已删除')
-                      } catch (err) {
-                        notify(err instanceof ApiError ? err.message : '删除失败', 'error')
-                      }
-                    })()
-                  }}
-                >
-                  删除草稿
+                <button type="button" className="btn-ghost" disabled={!editable} onClick={() => void remove()}>
+                  删除剧本
                 </button>
               </div>
             </div>
@@ -386,7 +376,7 @@ export function StudioPage() {
                     <div className="flex rounded-lg border border-line p-0.5 text-xs">
                       {(
                         [
-                          ['form', '结构化'],
+                          ['form', '可视化'],
                           ['json', 'JSON'],
                         ] as [EditorMode, string][]
                       ).map(([key, label]) => (
@@ -405,7 +395,7 @@ export function StudioPage() {
                   </div>
                 }
               >
-                {isDraft ? '校对草稿' : '编辑剧本'}
+                {isDraft ? '编写草稿' : '编辑剧本'}
               </SectionTitle>
               {detail.isLoading ? <Spinner /> : null}
               {mode === 'json' ? (
@@ -417,10 +407,11 @@ export function StudioPage() {
                   disabled={!editable}
                 />
               ) : draft ? (
-                <ScriptForm
+                <ScriptEditor
                   draft={draft}
                   disabled={!editable}
                   onChange={(next) => setEditor(JSON.stringify(next, null, 2))}
+                  onUploadImage={editable ? uploadImage : undefined}
                 />
               ) : (
                 <p className="rounded-xl border border-rose-500/40 bg-rose-950/30 p-3 text-xs text-rose-100">
@@ -540,397 +531,6 @@ function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
   if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`
-}
-
-/**
- * The skeleton a new draft starts from: metadata plus the phases the engine
- * expects. Reading comes first because every script opens with the role books
- * in hand; roles and clues stay empty for the developer to fill in.
- */
-function blankScript() {
-  return {
-    schemaVersion: 1,
-    meta: { title: '未命名剧本', playerCount: { min: 4, max: 6 }, tags: [] },
-    roles: [],
-    clues: [],
-    phases: [
-      { id: 'p1', type: 'reading', name: '阅读剧本' },
-      { id: 'p2', type: 'discussion', name: '自我介绍与案情讨论', round: 1, speechPerPlayer: 1, order: 'round_robin' },
-      { id: 'p3', type: 'search', name: '第一轮搜证', round: 1, perPlayerPick: 2, order: 'round_robin', searchMode: 'pick' },
-      { id: 'p4', type: 'discussion', name: '第一轮公聊', round: 1, speechPerPlayer: 2, order: 'round_robin' },
-      { id: 'p5', type: 'vote', name: '投票' },
-      { id: 'p6', type: 'reveal', name: '复盘' },
-    ],
-  }
-}
-
-const PHASE_TYPES = [
-  ['reading', '阅读剧本'],
-  ['opening', '开场'],
-  ['search', '搜证'],
-  ['discussion', '讨论'],
-  ['vote', '投票'],
-  ['reveal', '揭晓'],
-] as const
-
-const PHASE_ORDERS = [
-  ['round_robin', '轮流（按入座）'],
-  ['random', '随机'],
-  ['host_assigned', '主持人指定'],
-] as const
-
-const SEARCH_MODES = [
-  ['pick', '自选（看标题挑）'],
-  ['random', '随机抽取（抽到什么算什么）'],
-] as const
-
-/** One line of what the chosen order means at the table. */
-function orderHint(order?: string): string {
-  switch (order) {
-    case 'random':
-      return '阶段开始时随机排一次，之后按这个顺序进行'
-    case 'host_assigned':
-      return '阶段开始由主持人一次性排好整轮顺序'
-    default:
-      return '按入座顺序轮流，主持人优先'
-  }
-}
-
-function ScriptForm({
-  draft,
-  disabled,
-  onChange,
-}: {
-  draft: ScriptDraft
-  disabled: boolean
-  onChange: (next: ScriptDraft) => void
-}) {
-  const meta = draft.meta ?? {}
-  const count = meta.playerCount ?? {}
-  const phases = Array.isArray(draft.phases) ? draft.phases : []
-
-  const patchMeta = (patch: Partial<MetaDraft>) => onChange({ ...draft, meta: { ...meta, ...patch } })
-  const setPhases = (next: PhaseDraft[]) => onChange({ ...draft, phases: next })
-  const patchPhase = (index: number, patch: Partial<PhaseDraft>) =>
-    setPhases(phases.map((phase, i) => (i === index ? { ...phase, ...patch } : phase)))
-  // Switching the type also fills the fields the engine reads for it, so a card
-  // switched to "搜索" never imports with a zero pick count.
-  const setType = (index: number, type: string) => {
-    const phase = phases[index] ?? {}
-    if (type === 'search') {
-      patchPhase(index, {
-        type,
-        perPlayerPick: phase.perPlayerPick ?? 2,
-        searchMode: phase.searchMode ?? 'pick',
-        order: phase.order ?? 'round_robin',
-      })
-      return
-    }
-    if (type === 'discussion') {
-      patchPhase(index, { type, speechPerPlayer: phase.speechPerPlayer ?? 1, order: phase.order ?? 'round_robin' })
-      return
-    }
-    patchPhase(index, { type })
-  }
-  const move = (index: number, delta: number) => {
-    const target = index + delta
-    if (target < 0 || target >= phases.length) return
-    const next = phases.slice()
-    next[index] = phases[target]
-    next[target] = phases[index]
-    setPhases(next)
-  }
-
-  return (
-    <div className="space-y-5">
-      <div>
-        <h4 className="mb-2 text-xs font-semibold text-slate-300">基础信息</h4>
-        <div className="grid gap-2 sm:grid-cols-2">
-          <Field label="标题">
-            <input
-              className="input text-xs"
-              value={meta.title ?? ''}
-              disabled={disabled}
-              onChange={(e) => patchMeta({ title: e.target.value })}
-            />
-          </Field>
-          <Field label="作者">
-            <input
-              className="input text-xs"
-              value={meta.author ?? ''}
-              disabled={disabled}
-              onChange={(e) => patchMeta({ author: e.target.value })}
-            />
-          </Field>
-          <div className="sm:col-span-2">
-            <Field label="简介">
-              <textarea
-                className="input min-h-[64px] text-xs"
-                value={meta.summary ?? ''}
-                disabled={disabled}
-                onChange={(e) => patchMeta({ summary: e.target.value })}
-              />
-            </Field>
-          </div>
-          <Field label="人数下限">
-            <input
-              type="number"
-              min={1}
-              className="input text-xs"
-              value={count.min ?? 0}
-              disabled={disabled}
-              onChange={(e) => patchMeta({ playerCount: { ...count, min: Number(e.target.value) || 0 } })}
-            />
-          </Field>
-          <Field label="人数上限">
-            <input
-              type="number"
-              min={1}
-              className="input text-xs"
-              value={count.max ?? 0}
-              disabled={disabled}
-              onChange={(e) => patchMeta({ playerCount: { ...count, max: Number(e.target.value) || 0 } })}
-            />
-          </Field>
-          <Field label="难度">
-            <input
-              className="input text-xs"
-              value={meta.difficulty ?? ''}
-              disabled={disabled}
-              onChange={(e) => patchMeta({ difficulty: e.target.value })}
-            />
-          </Field>
-          <Field label="时长（分钟）">
-            <input
-              type="number"
-              min={0}
-              className="input text-xs"
-              value={meta.durationMin ?? 0}
-              disabled={disabled}
-              onChange={(e) => patchMeta({ durationMin: Number(e.target.value) || 0 })}
-            />
-          </Field>
-          <div className="sm:col-span-2">
-            <Field label="标签" hint="用逗号分隔">
-              <input
-                className="input text-xs"
-                value={(meta.tags ?? []).join('、')}
-                disabled={disabled}
-                onChange={(e) =>
-                  patchMeta({ tags: e.target.value.split(/[，,、]/).map((s) => s.trim()).filter(Boolean) })
-                }
-              />
-            </Field>
-          </div>
-        </div>
-      </div>
-
-      <div>
-        <div className="mb-2 flex items-center justify-between">
-          <h4 className="text-xs font-semibold text-slate-300">阶段与轮次</h4>
-          <button
-            type="button"
-            className="btn-ghost text-[11px]"
-            disabled={disabled}
-            onClick={() =>
-              setPhases([
-                ...phases,
-                {
-                  id: `phase_${phases.length + 1}`,
-                  type: 'discussion',
-                  name: '新阶段',
-                  round: 1,
-                  order: 'round_robin',
-                  speechPerPlayer: 1,
-                },
-              ])
-            }
-          >
-            + 添加阶段
-          </button>
-        </div>
-        {phases.length === 0 ? (
-          <p className="text-xs text-slate-500">还没有阶段。校验要求第一个阶段是 reading，并且至少有一个 reveal。</p>
-        ) : null}
-        <div className="space-y-2">
-          {phases.map((phase, index) => (
-            <div key={`${phase.id ?? 'phase'}-${index}`} className="rounded-xl border border-line/70 bg-ink/30 p-3">
-              <div className="mb-2 flex items-center justify-between gap-2">
-                <span className="font-mono text-[11px] text-slate-500">
-                  #{index + 1} · {phase.id ?? '未命名'}
-                </span>
-                <div className="flex gap-1">
-                  <button
-                    type="button"
-                    className="btn-ghost text-[11px]"
-                    disabled={disabled || index === 0}
-                    onClick={() => move(index, -1)}
-                  >
-                    ↑
-                  </button>
-                  <button
-                    type="button"
-                    className="btn-ghost text-[11px]"
-                    disabled={disabled || index === phases.length - 1}
-                    onClick={() => move(index, 1)}
-                  >
-                    ↓
-                  </button>
-                  <button
-                    type="button"
-                    className="btn-ghost text-[11px] text-rose-300"
-                    disabled={disabled}
-                    onClick={() => setPhases(phases.filter((_, i) => i !== index))}
-                  >
-                    删除
-                  </button>
-                </div>
-              </div>
-              <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-                <Field label="类型">
-                  <select
-                    className="input text-xs"
-                    value={phase.type ?? ''}
-                    disabled={disabled}
-                    onChange={(e) => setType(index, e.target.value)}
-                  >
-                    {PHASE_TYPES.map(([value, label]) => (
-                      <option key={value} value={value}>
-                        {label}（{value}）
-                      </option>
-                    ))}
-                  </select>
-                </Field>
-                <Field label="名称">
-                  <input
-                    className="input text-xs"
-                    value={phase.name ?? ''}
-                    disabled={disabled}
-                    onChange={(e) => patchPhase(index, { name: e.target.value })}
-                  />
-                </Field>
-                <Field label="轮次">
-                  <input
-                    type="number"
-                    min={0}
-                    className="input text-xs"
-                    value={phase.round ?? 0}
-                    disabled={disabled}
-                    onChange={(e) => patchPhase(index, { round: Number(e.target.value) || 0 })}
-                  />
-                </Field>
-                {phase.type === 'search' || phase.type === 'discussion' ? (
-                  <Field label="顺序策略" hint={orderHint(phase.order)}>
-                    <select
-                      className="input text-xs"
-                      value={phase.order || 'round_robin'}
-                      disabled={disabled}
-                      onChange={(e) => patchPhase(index, { order: e.target.value })}
-                    >
-                      {PHASE_ORDERS.map(([value, label]) => (
-                        <option key={value} value={value}>
-                          {label}
-                        </option>
-                      ))}
-                    </select>
-                  </Field>
-                ) : null}
-                {phase.type === 'search' ? (
-                  <Field label="搜证方式">
-                    <select
-                      className="input text-xs"
-                      value={phase.searchMode || 'pick'}
-                      disabled={disabled}
-                      onChange={(e) => patchPhase(index, { searchMode: e.target.value })}
-                    >
-                      {SEARCH_MODES.map(([value, label]) => (
-                        <option key={value} value={value}>
-                          {label}
-                        </option>
-                      ))}
-                    </select>
-                  </Field>
-                ) : null}
-                {phase.type === 'search' ? (
-                  <Field label="每人搜证次数">
-                    <input
-                      type="number"
-                      min={1}
-                      className="input text-xs"
-                      value={phase.perPlayerPick ?? 1}
-                      disabled={disabled}
-                      onChange={(e) => patchPhase(index, { perPlayerPick: Number(e.target.value) || 1 })}
-                    />
-                  </Field>
-                ) : null}
-                {phase.type === 'discussion' ? (
-                  <Field label="每人发言次数">
-                    <input
-                      type="number"
-                      min={1}
-                      className="input text-xs"
-                      value={phase.speechPerPlayer ?? 1}
-                      disabled={disabled}
-                      onChange={(e) => patchPhase(index, { speechPerPlayer: Number(e.target.value) || 1 })}
-                    />
-                  </Field>
-                ) : null}
-                <Field label="超时（秒）" hint="0 = 服务端默认">
-                  <input
-                    type="number"
-                    min={0}
-                    className="input text-xs"
-                    value={phase.timeoutSec ?? 0}
-                    disabled={disabled}
-                    onChange={(e) => patchPhase(index, { timeoutSec: Number(e.target.value) || 0 })}
-                  />
-                </Field>
-                <Field label="阶段 ID">
-                  <input
-                    className="input font-mono text-xs"
-                    value={phase.id ?? ''}
-                    disabled={disabled}
-                    onChange={(e) => patchPhase(index, { id: e.target.value })}
-                  />
-                </Field>
-              </div>
-              {phase.type === 'search' ? (
-                <div className="mt-2">
-                  <Field label="线索池" hint="线索 ID，用逗号分隔">
-                    <input
-                      className="input font-mono text-xs"
-                      value={(phase.cluePool ?? []).join(', ')}
-                      disabled={disabled}
-                      onChange={(e) => {
-                        const parts = e.target.value
-                          .split(/[，,]/)
-                          .map((s) => s.trim())
-                          .filter(Boolean)
-                        patchPhase(index, { cluePool: parts.length ? parts : undefined })
-                      }}
-                    />
-                  </Field>
-                </div>
-              ) : null}
-              <div className="mt-2">
-                <Field label="主持人手册" hint="只进主持人视图，不会发给 agent">
-                  <textarea
-                    className="input min-h-[60px] text-xs"
-                    value={phase.dmScript ?? ''}
-                    disabled={disabled}
-                    onChange={(e) => patchPhase(index, { dmScript: e.target.value })}
-                  />
-                </Field>
-              </div>
-            </div>
-          ))}
-        </div>
-        <p className="mt-2 text-[11px] leading-relaxed text-slate-500">
-          角色、线索、真相和事实表结构复杂，请切到「JSON」模式编辑；这里用于快速调阶段顺序、轮次、搜证方式、顺序策略与时限。
-        </p>
-      </div>
-    </div>
-  )
 }
 
 function extractErrors(payload: unknown): ValidationError[] {

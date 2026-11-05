@@ -67,11 +67,13 @@ SP_ADMIN_USERNAME=admin SP_ADMIN_PASSWORD=change-me   # 启动时创建或提权
 | GET | `/api/scripts` | `{scripts: ScriptSummary[]}`：管理员拿到全量，其他人拿到自己名下的 |
 | POST | `/api/scripts` | 管理员：请求体为标准剧本 JSON，直接建草稿 |
 | GET | `/api/scripts/{id}` | 作者得到完整剧本；其他人得到**脱敏**剧本（无 truth、无 private、无线索） |
-| PUT | `/api/scripts/{id}` | 仅作者或管理员、仅草稿；已发布返回 409（版本已冻结）；返回 `{script, errors}` |
+| PUT | `/api/scripts/{id}` | 仅作者或管理员。草稿可带错误保存（错误变 `warnings`）；已发布必须先过校验，否则 422 且不落库。返回 `{script, errors}`；已发布保存成功即版本号 +1 |
 | POST | `/api/scripts/{id}/draft` | 把已发布版本复制成可编辑草稿（版本号沿用，发布后 +1） |
-| POST | `/api/scripts/{id}/publish` | 校验通过后发布；失败返回 422 + `{errors: ValidationError[]}` |
+| POST | `/api/scripts/{id}/publish` | 校验通过后发布；失败返回 422 + `{errors: ValidationError[]}`；重复发布幂等 |
 | DELETE | `/api/scripts/{id}` | 仅作者或管理员 |
 | POST | `/api/scripts/sample` | 管理员：一键导入内置示例剧本并发布 |
+| POST | `/api/scripts/{id}/media` | 管理员：`multipart/form-data`，字段 `file`（也接受 `image`/`files`）；png/jpg/jpeg/webp/gif，单张 ≤ 8 MB；返回 `201 {url, name, size, mime}` |
+| GET | `/media/{id}/{name}` | 图片回放（免登录）；`Content-Type` 只由扩展名决定并带 `nosniff`，缺失或不在白名单返回 404 |
 
 ### 剧本从哪来
 
@@ -80,8 +82,8 @@ SP_ADMIN_USERNAME=admin SP_ADMIN_PASSWORD=change-me   # 启动时创建或提权
 1. **归档原件**：管理员把压缩包、docx、pdf、照片上传到 `POST /api/admin/materials`，
    文件原样存进服务端 `data/inbox/<时间戳>-raw_<随机>.<ext>`，`state.json` 只多一条
    `RawMaterial`。服务端不解压、不 OCR、不摘要 —— 这一步没有 LLM 参与。
-2. **转成标准 JSON**：开发者把原件转成 `docs/script.schema.json` 描述的结构，然后二选一：
-   工作台「新建空白草稿」拿骨架后逐字段填，或直接粘贴完整 JSON：
+2. **转成标准 JSON**：开发者把原件转成 `docs/script.schema.json` 描述的结构，然后三选一：
+   工作台「新建空白草稿」拿骨架后在可视化模式逐字段填、粘贴完整 JSON，或直接调接口：
 
 ```http
 POST /api/scripts
@@ -92,7 +94,9 @@ Content-Type: application/json
 
    返回 `201 {script, errors}`；`errors` 是校验结果，草稿可以先带着错误存在。
 3. **校对与发布**：`PUT /api/scripts/{id}` 保存，`POST /api/scripts/{id}/publish` 校验通过后发布；
-   已发布版本冻结（对局仍绑它），改内容用 `POST /api/scripts/{id}/draft` 另存新草稿。
+   已发布剧本保存即产生下一个版本（进行中的对局仍绑开局那一版），想另开分支用
+   `POST /api/scripts/{id}/draft`。角色本与线索里的配图先传到
+   `POST /api/scripts/{id}/media`，把返回的 `/media/<剧本 id>/<文件名>` 填进 `imageUrl`。
 
 `RawMaterial` = `{id, name, path, mime?, size?, uploadedBy?, createdAt}`，`path` 是服务端绝对路径，
 也是开发者去取文件的位置。
