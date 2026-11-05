@@ -38,6 +38,11 @@ type Visible struct {
 	PublicClues []domain.Clue       `json:"publicClues"`
 	OwnFacts    []domain.Fact       `json:"ownFacts"`
 	Transcript  []TranscriptLine    `json:"transcript"`
+	// Recap is the compressed history of everything up to RecapUpto. Both are
+	// prompt-only: the client still receives the full transcript, because a
+	// human can scroll back and an agent cannot.
+	Recap     string `json:"-"`
+	RecapUpto int    `json:"-"`
 	// Truth is only populated for human-facing views during the reveal phase.
 	Truth *domain.Truth `json:"truth,omitempty"`
 	// Seats is the public player list (no model ids, no persona numbers).
@@ -183,6 +188,10 @@ func VisibleFor(g *domain.Game, sc *domain.Script, seat *domain.Seat, opt Visibl
 	}
 	if opt.MaxTranscript > 0 && len(v.Transcript) > opt.MaxTranscript {
 		v.Transcript = v.Transcript[len(v.Transcript)-opt.MaxTranscript:]
+	}
+	if g.Recap != nil && strings.TrimSpace(g.Recap.Text) != "" {
+		v.Recap = g.Recap.Text
+		v.RecapUpto = g.Recap.UptoSeq
 	}
 
 	if opt.IncludeTruth && v.Phase.Type == domain.PhaseReveal {

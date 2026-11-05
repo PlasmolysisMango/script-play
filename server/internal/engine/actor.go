@@ -122,6 +122,9 @@ type Actor struct {
 	// model re-reads the rolling transcript and cannot tell a fresh accusation
 	// from one it already answered.
 	seatSeen map[string]int
+	// recapBusy keeps at most one compression in flight. Each phase asks for a
+	// recap; without the flag a fast table would stack them on a 2 vCPU box.
+	recapBusy bool
 	// order is this phase's turn order and orderPos is where the walk stands.
 	// host_assigned leaves both empty until the host lays the round out.
 	order    []domain.Seat
@@ -510,6 +513,10 @@ func (a *Actor) beginPhase(ctx context.Context) {
 	}
 	a.persistLocked()
 	a.mu.Unlock()
+
+	// Fold what the previous phases said into a recap before the table speaks
+	// again. It runs off the critical path: the phase never waits for it.
+	a.startRecap(gen)
 
 	switch ph.Type {
 	case domain.PhaseReading, domain.PhaseOpening:

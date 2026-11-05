@@ -153,8 +153,25 @@ type Game struct {
 	Votes      map[string]string    `json:"votes"` // seatID -> roleID
 	NextSeq    int                  `json:"nextSeq"`
 	Events     []Event              `json:"events"`
-	StartedAt  *time.Time           `json:"startedAt,omitempty"`
-	EndedAt    *time.Time           `json:"endedAt,omitempty"`
+	// Recap is the compressed retelling of everything public up to UptoSeq.
+	// It is what keeps a long argument from crowding the role book out of the
+	// prompt; nil means nothing has been compressed yet.
+	Recap     *Recap     `json:"recap,omitempty"`
+	StartedAt *time.Time `json:"startedAt,omitempty"`
+	EndedAt   *time.Time `json:"endedAt,omitempty"`
+}
+
+// Recap is a compressed history of the public log, written once per phase.
+//
+// UptoSeq is the anchor: every event at or before it is already folded into
+// Text, so the prompt may drop those lines instead of paying for them twice.
+// Compression is only ever applied to public material — a recap is readable by
+// every seat, exactly like the log it replaces.
+type Recap struct {
+	Text    string    `json:"text"`
+	UptoSeq int       `json:"uptoSeq"`
+	PhaseID string    `json:"phaseId,omitempty"`
+	At      time.Time `json:"at"`
 }
 
 // NewGame builds an empty game for a room.
