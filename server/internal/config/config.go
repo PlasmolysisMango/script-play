@@ -14,14 +14,19 @@ import (
 
 // Config is the resolved server configuration.
 type Config struct {
-	Addr      string
-	DataDir   string
-	WebDir    string
-	JWTSecret []byte
-	Auth      Auth
-	Admin     Admin
-	LLM       LLM
-	Limits    Limits
+	Addr    string
+	DataDir string
+	WebDir  string
+	// ScriptsDir is where the committed scripts live — each one a directory
+	// holding script.json and its pictures. The server only reads pictures from
+	// it (GET /script-assets/…); the JSON is imported through the studio, so an
+	// edit on disk never silently rewrites a published script.
+	ScriptsDir string
+	JWTSecret  []byte
+	Auth       Auth
+	Admin      Admin
+	LLM        LLM
+	Limits     Limits
 }
 
 // Admin seeds the one account allowed into the admin console. Username is the
@@ -96,10 +101,13 @@ func Load() (*Config, error) {
 	}
 
 	cfg := &Config{
-		Addr:      env("SP_ADDR", ":8080"),
-		DataDir:   dataDir,
-		WebDir:    os.Getenv("SP_WEB_DIR"),
-		JWTSecret: secretBytes,
+		Addr:    env("SP_ADDR", ":8080"),
+		DataDir: dataDir,
+		WebDir:  os.Getenv("SP_WEB_DIR"),
+		// Relative to the working directory, which is server/ for both
+		// `go run ./cmd/server` and the systemd unit.
+		ScriptsDir: env("SP_SCRIPTS_DIR", "../scripts"),
+		JWTSecret:  secretBytes,
 		Auth: Auth{
 			AccessTTL:  time.Duration(envInt("SP_ACCESS_TTL_MIN", 15)) * time.Minute,
 			RefreshTTL: time.Duration(envInt("SP_REFRESH_TTL_HOUR", 7*24)) * time.Hour,

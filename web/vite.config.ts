@@ -15,6 +15,10 @@ export default defineConfig({
     proxy: {
       '/api': { target, changeOrigin: true },
       '/ws': { target: wsTarget, ws: true },
+      // Pictures committed beside a script (scripts/<name>/images/…) are served
+      // by the Go server in production; in dev the proxy has to stand in.
+      '/script-assets': { target, changeOrigin: true },
+      '/media': { target, changeOrigin: true },
     },
   },
   build: {

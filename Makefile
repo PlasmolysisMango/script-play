@@ -39,6 +39,14 @@ web-check:
 web-build:
 	cd $(WEB_DIR) && npm run build
 
+## web-publish: 构建并发布前端到 nginx 站点目录（/usr/share/nginx/script-play）
+web-publish: web-build
+	rm -rf /usr/share/nginx/script-play.new
+	cp -a $(WEB_DIR)/dist /usr/share/nginx/script-play.new
+	mv /usr/share/nginx/script-play /usr/share/nginx/script-play.old 2>/dev/null || true
+	mv /usr/share/nginx/script-play.new /usr/share/nginx/script-play
+	rm -rf /usr/share/nginx/script-play.old
+
 ## voices: 浏览器语音能力自检（Web Speech API，无需下载模型）
 voices:
 	@echo "ASR  : Chrome/Edge 的 webkitSpeechRecognition；其它浏览器自动回退为文本输入"
@@ -49,4 +57,4 @@ voices:
 fmt:
 	cd $(SERVER_DIR) && gofmt -w ./cmd ./internal
 
-.PHONY: help server test run dev-server web-install web-dev web-check web-build voices fmt
+.PHONY: help server test run dev-server web-install web-dev web-check web-build web-publish voices fmt

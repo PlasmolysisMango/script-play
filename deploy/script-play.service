@@ -1,0 +1,32 @@
+[Unit]
+Description=Script-Play server (剧本杀)
+Documentation=file:///root/workspace/project/script-play/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/workspace/project/script-play/server
+# qodercli 依赖 ~/.qoder 与 PATH 中的入口
+Environment=HOME=/root
+Environment=PATH=/root/.local/bin:/root/.qoder/entry:/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# 只监听回环：对外由 nginx 的 9091 提供，见 deploy/nginx/script-play.conf。
+Environment=SP_ADDR=127.0.0.1:9092
+Environment=SP_DATA_DIR=./data
+# 随仓库固化的剧本目录（scripts/<剧本>/script.json + images/），相对 WorkingDirectory。
+Environment=SP_SCRIPTS_DIR=../scripts
+Environment=SP_LLM_PROVIDER=qodercli
+Environment=SP_ADMIN_USERNAME=mango
+Environment=SP_ADMIN_DISPLAY_NAME=芒果干
+ExecStart=/root/workspace/project/script-play/server/bin/script-play
+Restart=always
+RestartSec=3
+# 独立于 user.slice：不受 IDE 的 CPU/内存限额与 OOM 牵连
+Slice=system.slice
+CPUWeight=500
+StandardOutput=append:/root/workspace/project/script-play/server/logs/server.log
+StandardError=inherit
+
+[Install]
+WantedBy=multi-user.target

@@ -74,6 +74,7 @@ SP_ADMIN_USERNAME=admin SP_ADMIN_PASSWORD=change-me   # 启动时创建或提权
 | POST | `/api/scripts/sample` | 管理员：一键导入内置示例剧本并发布 |
 | POST | `/api/scripts/{id}/media` | 管理员：`multipart/form-data`，字段 `file`（也接受 `image`/`files`）；png/jpg/jpeg/webp/gif，单张 ≤ 8 MB；返回 `201 {url, name, size, mime}` |
 | GET | `/media/{id}/{name}` | 图片回放（免登录）；`Content-Type` 只由扩展名决定并带 `nosniff`，缺失或不在白名单返回 404 |
+| GET | `/script-assets/{剧本目录}/{路径}` | 随剧本固化的图（`scripts/<剧本目录>/images/…`，免登录）；只放行图片扩展名，`script.json` 拿不到，`Cache-Control: max-age=3600` |
 
 ### 剧本从哪来
 
@@ -95,7 +96,8 @@ Content-Type: application/json
    返回 `201 {script, errors}`；`errors` 是校验结果，草稿可以先带着错误存在。
 3. **校对与发布**：`PUT /api/scripts/{id}` 保存，`POST /api/scripts/{id}/publish` 校验通过后发布；
    已发布剧本保存即产生下一个版本（进行中的对局仍绑开局那一版），想另开分支用
-   `POST /api/scripts/{id}/draft`。角色本与线索里的配图先传到
+   `POST /api/scripts/{id}/draft`。角色本与线索里的配图两种来源：随剧本固化的放
+   `scripts/<剧本目录>/images/`，正文写 `/script-assets/<剧本目录>/images/<文件名>`；后台上传的走
    `POST /api/scripts/{id}/media`，把返回的 `/media/<剧本 id>/<文件名>` 填进 `imageUrl`。
 
 `RawMaterial` = `{id, name, path, mime?, size?, uploadedBy?, createdAt}`，`path` 是服务端绝对路径，

@@ -36,8 +36,9 @@ cd server && SP_ADMIN_USERNAME=admin SP_ADMIN_PASSWORD='换成你的密码' go r
 1. **上传原件**：剧本工作台的「原始素材」直接传 zip、docx、pdf、照片，文件原样落到服务端
    `data/inbox/<时间戳>-raw_<随机>.<ext>`，面板上直接显示每份文件的服务端绝对路径。不解压、不 OCR、不调用
    LLM。
-2. **转成标准 JSON**：按 `docs/script.schema.json` 把原件写成剧本 JSON（仓库里已转好的放 `scripts/`，
-   例如 `scripts/K7-星火号.json`）。字段、默认值与校验规则见[导入剧本规范](#导入剧本规范)。
+2. **转成标准 JSON**：按 `docs/script.schema.json` 把原件写成剧本 JSON。仓库里已转好的，一本一个目录：
+   `scripts/<剧本名>/script.json`，配图放同目录 `images/`（例如 `scripts/K7-星火号/`）。剧本正文与它的图片
+   放一起，换机器只搬 `scripts/` 即可。字段、默认值与校验规则见[导入剧本规范](#导入剧本规范)。
 3. **录入**：三种入口，最终落到同一份结构、走同一套校验——
    - 工作台「新建空白草稿」拿一份带默认阶段的骨架（reading → 讨论 → 搜证 → 公聊 → 投票 → 复盘），
      在「可视化」模式里逐字段填；
@@ -54,9 +55,10 @@ cd server && SP_ADMIN_USERNAME=admin SP_ADMIN_PASSWORD='换成你的密码' go r
    - **事实表**与**真相**（凶手、手法、动机、时间线、复盘全文）。
    角色本、线索正文、真相、主持人手册都是 Markdown 输入框，带「编辑 / 预览」切换和「插图」按钮；
    「JSON」模式保留，用来整份替换或粘贴大段文本。
-5. **配图**：编辑器里的「上传」调用 `POST /api/scripts/{id}/media`，图片落到 `data/media/<剧本 id>/`，
-   写进 `imageUrl` 的是相对路径 `/media/<剧本 id>/<文件名>`——前后端同源托管，换域名或端口都不用改剧本；
-   外部图床的绝对 URL 也可以直接填。单张上限 8 MB，只收 png/jpg/jpeg/webp/gif，
+5. **配图**：两种来源——随剧本固化的图放 `scripts/<剧本名>/images/`，正文写
+   `/script-assets/<剧本名>/images/<文件名>`；编辑器里「上传」的图调 `POST /api/scripts/{id}/media`，
+   落到 `data/media/<剧本 id>/`，写进 `imageUrl` 的是 `/media/<剧本 id>/<文件名>`。两者都是站内相对路径，
+   换域名或端口都不用改剧本；外部图床的绝对 URL 也可以直接填。单张上限 8 MB，只收 png/jpg/jpeg/webp/gif，
    服务端按扩展名发 `Content-Type` 并加 `nosniff`，不会把改名成 `.png` 的 HTML 当图片发出去。
 6. **发布**：「校验并发布」跑完整规则，失败返回 422 + 逐字段 `errors`，草稿原样保留。
 
@@ -71,7 +73,7 @@ cd server && SP_ADMIN_USERNAME=admin SP_ADMIN_PASSWORD='换成你的密码' go r
 | `> 引用` | 引用块 |
 | ` ```lang ` … ` ``` ` | 代码块 |
 | `---` | 分隔线 |
-| `![说明](图片地址)` | 独占一行的配图（地址可以是 `/media/…` 或外链） |
+| `![说明](图片地址)` | 独占一行的配图（地址可以是 `/script-assets/…`、`/media/…` 或外链） |
 | `**21:30** 做了什么` | 时间线条目（角色本与复盘里按行排版） |
 
 阶段策略（都是剧本字段，对局里只读）：
@@ -99,7 +101,7 @@ cd server && SP_ADMIN_USERNAME=admin SP_ADMIN_PASSWORD='换成你的密码' go r
 | 路径 | 入口 | 适用 |
 |---|---|---|
 | 可视化编辑 | 管理台「进入剧本工作台」→「新建空白草稿」→ 六个分区逐字段填 | 手写新剧本、边校对边改、需要上传配图 |
-| 粘贴 JSON | 工作台「粘贴 JSON」→「导入为草稿」 | 已有转写好的 `scripts/*.json` |
+| 粘贴 JSON | 工作台「粘贴 JSON」→「导入为草稿」 | 已有转写好的 `scripts/<剧本名>/script.json` |
 | HTTP | `POST /api/scripts`，请求体即剧本 JSON | 脚本化批量导入、CI 造数据 |
 
 三者都落进同一种记录，导入后可以在「可视化」与「JSON」两个模式之间来回切换，不会丢字段。
@@ -202,11 +204,13 @@ cd server && SP_ADMIN_USERNAME=admin SP_ADMIN_PASSWORD='换成你的密码' go r
 
 - 角色本、线索正文、真相复盘、主持人手册都按 Markdown 子集渲染（见上一节的表）；解析器零依赖，
   未识别的标记原样显示，不会把半行标记当成格式吞掉；
-- `imageUrl` 写相对路径 `/media/<剧本 id>/<文件名>` 最稳：同源托管，换域名/端口不用改剧本；
-  外链绝对 URL 也可以直接填；
-- 图片由 `POST /api/scripts/{id}/media`（`multipart/form-data`，字段 `file`）上传，
+- `imageUrl` 写站内相对路径最稳：随剧本固化的图写 `/script-assets/<剧本名>/images/<文件名>`，
+  后台上传的图写 `/media/<剧本 id>/<文件名>`；换域名/端口不用改剧本，外链绝对 URL 也可以直接填；
+- 固化图由 `GET /script-assets/<剧本名>/<路径>` 直接从 `scripts/` 读（只放行图片扩展名，`script.json`
+  拿不到，单文件上限不设，靠 git 管版本；`Cache-Control: max-age=3600`，换图一小时内生效）；
+- 上传图由 `POST /api/scripts/{id}/media`（`multipart/form-data`，字段 `file`）写入，
   落到 `data/media/<剧本 id>/`，响应 `{url, name, size, mime}`；
-  `GET /media/{id}/{name}` 负责回放，按扩展名决定 `Content-Type` 并加 `nosniff`；
+  `GET /media/{id}/{name}` 负责回放，按扩展名决定 `Content-Type` 并加 `nosniff` ；
 - 图片不是必填：线索可以只有文字。
 
 ### 7. 版本与发布语义
@@ -230,24 +234,41 @@ cd server && SP_ADMIN_USERNAME=admin SP_ADMIN_PASSWORD='换成你的密码' go r
 - [ ] `truth.killerRoleId` 指向真实存在的角色，且和线索、秘密对得上；
 - [ ] 人数区间不超过角色数；
 - [ ] 角色本里的 Markdown 在「预览」里看过一遍：标题、时间线、列表没有错位；
-- [ ] 配图能打开（相对 `/media/…` 或外链），且不包含不想提前泄露的信息。
+- [ ] 配图能打开（`/script-assets/…` 或 `/media/…` 或外链），且不包含不想提前泄露的信息。
 
-## 单进程部署（前端 + API 同源）
+## 部署（nginx + systemd）
 
-```bash
-cd web && npm run build                       # 产物在 web/dist
-cd ../server && go build -o bin/script-play ./cmd/server
-SP_ADDR=:9091 \
-SP_DATA_DIR=./data \
-SP_WEB_DIR=$(pwd)/../web/dist \
-SP_LLM_PROVIDER=qodercli \
-nohup ./bin/script-play > /tmp/script-play.log 2>&1 &
+对外只有 nginx 的 9091；Go 只监听回环，前端静态由 nginx 直接发。
+
+```
+浏览器 ──9091──> nginx ─┬─ /                        → /usr/share/nginx/script-play（Vite 产物）
+                        ├─ /assets/                 → 同上，immutable 长缓存
+                        ├─ /api/  /ws/              → 127.0.0.1:9092（Go）
+                        └─ /media/ /script-assets/  → 127.0.0.1:9092（Go）
 ```
 
-`SP_WEB_DIR` 设置后同一端口同时托管前端、`/api` 与 `/ws`，不需要额外反代。
-`/assets/*`（Vite 带指纹的文件名）返回 `immutable` 长缓存，`index.html` 返回
-`no-store`，避免浏览器拿旧壳指向已删除的 bundle；缺失的 `/assets/*` 直接 404，
-不会被 SPA 兜底伪装成 200 的 HTML。
+首次安装（配置都随仓库放 `deploy/`）：
+
+```bash
+make web-publish                                        # 构建前端 → /usr/share/nginx/script-play
+cp deploy/nginx/script-play.conf /etc/nginx/conf.d/     # 与其它站点共存，不动现有 server 块
+cp deploy/script-play.service /etc/systemd/system/
+make server && systemctl daemon-reload && systemctl enable --now script-play
+nginx -t && systemctl reload nginx
+```
+
+日常发版：`make server && systemctl restart script-play`；只改了前端就 `make web-publish`。
+
+几条不能改错的：
+
+- **站点根不能放 `/root` 下**：nginx worker 以 `nginx` 用户运行，进不去权限 750 的 `~`；
+- `/api/` 的 `proxy_read_timeout` 必须大于 `SP_AGENT_TIMEOUT_SEC`（默认 180s），否则长生成中途被切断；
+- `/ws/` 必须显式透传 `Upgrade` / `Connection`，否则握手永远 400；
+- `/assets/*` 缺失要 404，不能回落 `index.html`，否则浏览器把 HTML 当 JS 执行、报 MIME 错白屏；
+- `client_max_body_size` 要 ≥ `SP_MAX_UPLOAD_MB`（默认 64m）。
+
+本地开发仍是单进程：`make run`（Go 8080，带 `SP_WEB_DIR`）配 `make web-dev`（5173，代理 `/api`、
+`/ws`、`/media`、`/script-assets`）。`SP_WEB_DIR` 只服务于这个场景，生产由 nginx 发前端。
 
 ## LLM Provider
 
@@ -269,7 +290,8 @@ prompt 走 stdin。`--tools=` 必须显式关闭，否则子进程会在工作�
 |---|---|---|
 | `SP_ADDR` | `:8080` | 监听地址 |
 | `SP_DATA_DIR` | `./data` | 数据目录（JSON 快照 + `inbox/` 原件 + JWT secret） |
-| `SP_WEB_DIR` | 空 | 设置后同时托管前端静态文件（生产单进程部署） |
+| `SP_WEB_DIR` | 空 | 设置后由 Go 自己托管前端静态文件（仅本地开发；生产由 nginx 发） |
+| `SP_SCRIPTS_DIR` | `../scripts` | 随仓库固化的剧本目录；`GET /script-assets/…` 从这个根读图，相对工作目录 |
 | `SP_JWT_SECRET` | 自动生成 | 不设则落盘 `data/secret.key` |
 | `SP_ADMIN_USERNAME` / `SP_ADMIN_PASSWORD` | 空 | 启动时创建或提权管理员账号；已存在且未给密码时只提权。不设则没有管理员 |
 | `SP_ADMIN_DISPLAY_NAME` | 空 | 管理员昵称；空则用用户名。设了会顺带改已有账号的昵称 |
