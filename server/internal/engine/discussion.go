@@ -392,6 +392,7 @@ func (a *Actor) agentTurns(ctx context.Context, gen int, seat domain.Seat, ph *d
 		p := a.personas[seat.ID]
 		pressure := a.pressureLocked(seat, ph)
 		own := a.ownClueIDsLocked(seat)
+		targets := a.whisperTargetsLocked(seat)
 		replyName := ""
 		if s := a.g.SeatByID(slot.ReplyTo); s != nil {
 			replyName = a.speakerLocked(*s)
@@ -406,7 +407,7 @@ func (a *Actor) agentTurns(ctx context.Context, gen int, seat domain.Seat, ph *d
 			Persona:     p,
 			Pressure:    pressure,
 			Instruction: talkInstruction(ph, slot, replyName, step),
-			Tools:       a.speechToolsLocked(seat, own),
+			Tools:       a.speechToolsLocked(seat, own, targets),
 			Fresh:       fresh,
 		})
 		text, _, err := a.generate(ctx, gen, seat, req)
@@ -467,6 +468,15 @@ func (a *Actor) applyActionStep(seat domain.Seat, ph *domain.Phase, act AgentAct
 	case ToolPass:
 		a.declined(seat, SpeechSlot{SeatID: seat.ID, Kind: SlotRequest})
 		return false
+	case ToolWhisper:
+		// A whisper replaces the public line: the seat leaned in instead of
+		// speaking up, which ends its turn like any other utterance.
+		if to := strings.TrimSpace(act.To); to != "" {
+			if err := a.sendWhisper(seat, to, cleanSpeech(act.Text)); err != nil {
+				a.notify(seat, err.Error())
+			}
+		}
+		return false
 	case ToolReveal:
 		revealed := false
 		if id := strings.TrimSpace(act.ClueID); id != "" {
@@ -508,7 +518,7 @@ func (a *Actor) observeLocked(seat domain.Seat, limit int) []TranscriptLine {
 			continue
 		}
 		switch ev.Type {
-		case domain.EvSpeech, domain.EvDM, domain.EvSystem, domain.EvClueRevealed, domain.EvPhase:
+		case domain.EvSpeech, domain.EvWhisper, domain.EvDM, domain.EvSystem, domain.EvClueRevealed, domain.EvPhase:
 		default:
 			continue
 		}
@@ -536,6 +546,9 @@ func (a *Actor) ownClueIDsLocked(seat domain.Seat) []string {
 	for _, c := range a.sc.Clues {
 		st := a.g.ClueState[c.ID]
 		if st.Revealed {
+			continue
+		}
+		if sealedClue(c, st) {
 			continue
 		}
 		if st.FoundBySeat == seat.ID || (c.OwnerRoleID != "" && c.OwnerRoleID == seat.RoleID) {

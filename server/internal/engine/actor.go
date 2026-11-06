@@ -37,6 +37,8 @@ type ClientMessage struct {
 	// ReplyTo names the seat a speech answers. The engine moves that seat to the
 	// front of the discussion queue so it gets to answer first (or decline).
 	ReplyTo string `json:"replyTo,omitempty"`
+	// To is the seat a whisper is addressed to.
+	To string `json:"to,omitempty"`
 }
 
 // ActorConfig tunes timing.
@@ -125,6 +127,10 @@ type Actor struct {
 	// recapBusy keeps at most one compression in flight. Each phase asks for a
 	// recap; without the flag a fast table would stack them on a 2 vCPU box.
 	recapBusy bool
+	// whisperBusy keeps one private answer per seat in flight: a whisper to an
+	// AI costs a model call, and a human who sends two lines in a row should not
+	// fork two of them.
+	whisperBusy map[string]bool
 	// order is this phase's turn order and orderPos is where the walk stands.
 	// host_assigned leaves both empty until the host lays the round out.
 	order    []domain.Seat
@@ -160,11 +166,12 @@ func NewActor(g *domain.Game, sc *domain.Script, reg *llm.Registry, sink GameSin
 		speech:   map[string]int{},
 		searched: map[string]int{},
 		// buffered so queueing never blocks the command that queued.
-		talkWake:   make(chan struct{}, 1),
-		talkBudget: map[string]int{},
-		talkAt:     map[string]time.Time{},
-		seatSeen:   map[string]int{},
-		done:       make(chan struct{}),
+		talkWake:    make(chan struct{}, 1),
+		talkBudget:  map[string]int{},
+		talkAt:      map[string]time.Time{},
+		seatSeen:    map[string]int{},
+		whisperBusy: map[string]bool{},
+		done:        make(chan struct{}),
 	}
 	for _, s := range g.Seats {
 		a.personas[s.ID] = persona.Get(s.PersonaID)
@@ -379,6 +386,11 @@ func (a *Actor) Handle(ctx context.Context, seatID string, msg ClientMessage) er
 	case "speak.request":
 		// Ask for the floor in an open discussion instead of typing first.
 		return a.requestFloor(*seat)
+	case "whisper.send":
+		// Handled before the waiter check: a private line is legal while this
+		// seat owes a prompt (it may even hold the floor), and it must never be
+		// swallowed by a phase's wait channel.
+		return a.sendWhisper(*seat, msg.To, msg.Text)
 	}
 
 	if waitCh != nil {
@@ -901,9 +913,26 @@ func (a *Actor) awaitSearch(ctx context.Context, gen int, seat domain.Seat, ph *
 		a.mu.Unlock()
 		return false
 	}
+	left := ph.PerPlayerPick - a.searched[seat.ID]
+	// A seat can run out of cards it is allowed to take while it still owes
+	// picks: its own frisking clue goes back to the pile, a deep-dive card is
+	// still missing its item. Retire the seat here, the same way the agent walk
+	// does, instead of handing it a button that can only fail.
+	if left > 0 && len(a.availableCluesLocked(seat, ph)) == 0 {
+		a.searched[seat.ID] = ph.PerPlayerPick
+		a.appendLocked(domain.Event{
+			Type:       domain.EvSystem,
+			SeatID:     seat.ID,
+			Visibility: SeatVisibility(seat.ID),
+			PhaseID:    ph.ID,
+			Text:       "剩下的线索都不能由你搜（本人的搜身线索、缺物品或缺少前置线索），本轮搜证到此为止",
+		})
+		a.persistLocked()
+		a.mu.Unlock()
+		return false
+	}
 	ch := make(chan ClientMessage, 1)
 	a.waiters[seat.ID] = ch
-	left := ph.PerPlayerPick - a.searched[seat.ID]
 	prompt := fmt.Sprintf("轮到你搜证，可搜 %d 次：%s", left, strings.Join(a.searchableTitlesLocked(seat, ph), "、"))
 	if ph.SearchMode == domain.SearchRandom {
 		// Random mode hides the list on purpose: knowing the titles would turn
@@ -1049,6 +1078,9 @@ func (a *Actor) availableCluesLocked(seat domain.Seat, ph *domain.Phase) []*doma
 		if c.OwnerRoleID != "" && c.OwnerRoleID != seat.RoleID {
 			continue
 		}
+		if a.clueBlockedLocked(seat, c) != "" {
+			continue
+		}
 		out = append(out, c)
 	}
 	return out
@@ -1143,6 +1175,9 @@ func (a *Actor) claimClue(seat domain.Seat, clueID string, ph *domain.Phase) err
 	if c.OwnerRoleID != "" && c.OwnerRoleID != seat.RoleID {
 		return ErrNotAllowed{Reason: "该线索属于其他人的私人物品"}
 	}
+	if reason := a.clueBlockedLocked(seat, c); reason != "" {
+		return ErrNotAllowed{Reason: reason}
+	}
 	if a.searched[seat.ID] >= ph.PerPlayerPick {
 		return ErrNotAllowed{Reason: "本轮搜证次数已用完"}
 	}
@@ -1152,26 +1187,131 @@ func (a *Actor) claimClue(seat domain.Seat, clueID string, ph *domain.Phase) err
 	if c.OwnerRoleID != "" {
 		st.PrivateOwner = c.OwnerRoleID
 	}
-	st.FoundAt = time.Now().UTC()
+	now := time.Now().UTC()
+	st.FoundAt = now
+	// revealOnFind opens the whole phase; mustReveal opens one card inside an
+	// otherwise private round ("本线索必须公开"). Either way the find is read
+	// aloud at once and the seat never holds it alone.
+	public := ph.RevealOnFind || c.MustReveal
+	if public {
+		st.Revealed = true
+		st.RevealedBy = seat.ID
+		st.RevealedAt = now
+	}
 	a.g.ClueState[clueID] = st
-	a.appendLocked(domain.Event{
-		Type:       domain.EvClueFound,
-		PhaseID:    ph.ID,
-		SeatID:     seat.ID,
-		RoleID:     seat.RoleID,
-		ClueID:     clueID,
-		Visibility: SeatVisibility(seat.ID),
-		Text:       fmt.Sprintf("你搜到线索【%s】：%s", c.Title, c.Content),
-		Meta:       map[string]string{"title": c.Title},
-	})
-	a.appendLocked(domain.Event{
-		Type:    domain.EvSystem,
-		PhaseID: ph.ID,
-		SeatID:  seat.ID,
-		Text:    fmt.Sprintf("%s 搜到一条线索（内容未公开）", a.speakerLocked(seat)),
-	})
+	if public {
+		a.appendLocked(domain.Event{
+			Type:    domain.EvClueRevealed,
+			PhaseID: ph.ID,
+			SeatID:  seat.ID,
+			RoleID:  seat.RoleID,
+			ClueID:  clueID,
+			Text:    fmt.Sprintf("%s 搜到并公开了线索【%s】：%s", a.speakerLocked(seat), c.Title, c.Content),
+			Meta:    map[string]string{"title": c.Title, "content": c.Content},
+		})
+	} else {
+		a.appendLocked(domain.Event{
+			Type:       domain.EvClueFound,
+			PhaseID:    ph.ID,
+			SeatID:     seat.ID,
+			RoleID:     seat.RoleID,
+			ClueID:     clueID,
+			Visibility: SeatVisibility(seat.ID),
+			Text:       fmt.Sprintf("你搜到线索【%s】：%s", c.Title, c.Content),
+			Meta:       map[string]string{"title": c.Title},
+		})
+		a.appendLocked(domain.Event{
+			Type:    domain.EvSystem,
+			PhaseID: ph.ID,
+			SeatID:  seat.ID,
+			Text:    fmt.Sprintf("%s 搜到一条线索（内容未公开）", a.speakerLocked(seat)),
+		})
+	}
+	if c.GrantsItem != "" && a.g.GrantItem(seat.ID, c.GrantsItem) {
+		a.appendLocked(domain.Event{
+			Type:       domain.EvSystem,
+			PhaseID:    ph.ID,
+			SeatID:     seat.ID,
+			Visibility: SeatVisibility(seat.ID),
+			Text:       fmt.Sprintf("你获得了物品【%s】", c.GrantsItem),
+		})
+	}
+	if public {
+		a.unlockKeywordsLocked(c.Title + " " + c.Content)
+	}
 	a.persistLocked()
 	return nil
+}
+
+// clueBlockedLocked explains why a clue is not searchable yet. The empty string
+// means it may be taken. The same rule list backs both the pick list and the
+// claim, so a client never sees an option the server would refuse.
+func (a *Actor) clueBlockedLocked(seat domain.Seat, c *domain.Clue) string {
+	if c.SubjectRoleID != "" && c.SubjectRoleID == seat.RoleID {
+		return "这是你本人的搜身线索，放回原位后重新抽取"
+	}
+	if !a.g.HasItems(seat.ID, c.RequiresItems) {
+		return fmt.Sprintf("先拿到%s，才能翻这条线索", strings.Join(c.RequiresItems, "、"))
+	}
+	for _, cid := range c.UnlockedBy {
+		st := a.g.ClueState[cid]
+		if st.FoundBySeat == "" && !st.Revealed {
+			return "这条线索还没有浮出来，先把场上的线索查完"
+		}
+	}
+	return ""
+}
+
+// unlockKeywordsLocked opens every memory fragment whose keyword just entered
+// the public air — a spoken line or a clue shown to the table. The fragment
+// itself stays private to its role; only the trigger is public.
+func (a *Actor) unlockKeywordsLocked(text string) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return
+	}
+	phaseID := ""
+	if ph := a.m.Current(a.g); ph != nil {
+		phaseID = ph.ID
+	}
+	for i := range a.sc.Clues {
+		c := &a.sc.Clues[i]
+		if c.OwnerRoleID == "" || len(c.Keywords) == 0 {
+			continue
+		}
+		st := a.g.ClueState[c.ID]
+		if st.Unlocked {
+			continue
+		}
+		hit := ""
+		for _, kw := range c.Keywords {
+			if kw != "" && strings.Contains(text, kw) {
+				hit = kw
+				break
+			}
+		}
+		if hit == "" {
+			continue
+		}
+		st.ClueID = c.ID
+		st.Unlocked = true
+		a.g.ClueState[c.ID] = st
+		owner := a.g.SeatByRole(c.OwnerRoleID)
+		if owner == nil {
+			continue
+		}
+		a.appendLocked(domain.Event{
+			Type:       domain.EvClueFound,
+			PhaseID:    phaseID,
+			SeatID:     owner.ID,
+			RoleID:     owner.RoleID,
+			ClueID:     c.ID,
+			Visibility: SeatVisibility(owner.ID),
+			Text:       fmt.Sprintf("关键词「%s」触发了你的记忆碎片【%s】：%s", hit, c.Title, c.Content),
+			Meta:       map[string]string{"title": c.Title, "keyword": hit},
+		})
+	}
+	a.persistLocked()
 }
 
 func (a *Actor) agentSearch(seat domain.Seat, ph *domain.Phase) bool {
@@ -1251,6 +1391,7 @@ func (a *Actor) revealClue(seat domain.Seat, clueID string) error {
 		Text:    fmt.Sprintf("%s 公开了线索【%s】：%s", a.speakerLocked(seat), c.Title, c.Content),
 		Meta:    map[string]string{"title": c.Title, "content": c.Content},
 	})
+	a.unlockKeywordsLocked(c.Title + " " + c.Content)
 	a.persistLocked()
 	a.mu.Unlock()
 	return nil
@@ -1721,6 +1862,7 @@ func (a *Actor) appendSpeechTo(seat domain.Seat, text, replyTo string) {
 		}
 	}
 	a.appendLocked(ev)
+	a.unlockKeywordsLocked(text)
 	if replyTo != "" && replyTo != seat.ID {
 		a.enqueueTalkLocked(SpeechSlot{SeatID: replyTo, Kind: SlotReply, ReplyTo: seat.ID}, true)
 	}

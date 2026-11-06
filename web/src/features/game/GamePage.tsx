@@ -19,6 +19,8 @@ type SendCmd = {
   roleId?: string
   seatIds?: string[]
   replyTo?: string
+  /** Target of a whisper. */
+  to?: string
 }
 
 /** Events that change what this seat may see, so the snapshot must be refetched. */
@@ -64,6 +66,8 @@ export function GamePage({ code }: { code: string }) {
   const [draft, setDraft] = useState('')
   /** Seat id this line answers, kept until the line is sent or cancelled. */
   const [replyTo, setReplyTo] = useState('')
+  /** Seat id a private line goes to; empty means "say it to the table". */
+  const [whisperTo, setWhisperTo] = useState('')
   const [reading, setReading] = useState(false)
   const socketRef = useRef<RoomSocket | null>(null)
   const refreshTimer = useRef<number | null>(null)
@@ -74,6 +78,13 @@ export function GamePage({ code }: { code: string }) {
   const isHost = state?.visible.self.isHost ?? false
   const phase = state?.visible.phase
   const floorMine = !!state?.floor && state.floor.seatId === seatId
+  // Private talk only exists while the table is discussing: a whisper during
+  // search or voting would be a hole in the flow the engine rejects anyway.
+  const canWhisper = !!state && state.status === 'running' && phase?.type === 'discussion' && !isSpectator
+  const whisperTargets = useMemo(
+    () => (state?.visible.seats ?? []).filter((s) => s.roleId && s.id !== seatId && s.kind !== 'spectator'),
+    [state?.visible.seats, seatId],
+  )
 
   // Lines that arrived before this page opened only exist in the snapshot, so
   // the host's opening monologue would be silent. Read the newest one once,
@@ -110,6 +121,7 @@ export function GamePage({ code }: { code: string }) {
     useGame.getState().reset()
     setDraft('')
     setReplyTo('')
+    setWhisperTo('')
     setLoading(true)
     snapshotRead.current = false
     // Chrome resolves the voice list lazily; ask now so the first line has a voice.
@@ -167,9 +179,24 @@ export function GamePage({ code }: { code: string }) {
     [notify],
   )
 
+  // Leaving the discussion must not leave the box in private mode: the next
+  // phase would send frames the engine rejects.
+  useEffect(() => {
+    if (!canWhisper && whisperTo) setWhisperTo('')
+  }, [canWhisper, whisperTo])
+
   const submitSpeech = () => {
     const text = draft.trim()
     if (!text) return
+    // A private line has its own frame: it must not consume the floor, and the
+    // other seats never receive it.
+    if (whisperTo) {
+      if (send({ type: 'whisper.send', to: whisperTo, text })) {
+        setDraft('')
+        setReplyTo('')
+      }
+      return
+    }
     if (send({ type: 'speak.text', text, replyTo: replyTo || undefined })) {
       setDraft('')
       setReplyTo('')
@@ -289,15 +316,38 @@ export function GamePage({ code }: { code: string }) {
                 </button>
               </div>
             ) : null}
+            {canWhisper ? (
+              <div className="flex flex-wrap items-center gap-2 text-xs">
+                <label htmlFor="whisper-to" className="text-slate-500">
+                  私聊对象
+                </label>
+                <select
+                  id="whisper-to"
+                  className="input w-auto max-w-full"
+                  value={whisperTo}
+                  onChange={(e) => setWhisperTo(e.target.value)}
+                >
+                  <option value="">说给所有人</option>
+                  {whisperTargets.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      只对 {s.roleName || s.displayName} 说
+                    </option>
+                  ))}
+                </select>
+                {whisperTo ? <span className="text-slate-500">只有你们两个看得到</span> : null}
+              </div>
+            ) : null}
             <div className="flex items-end gap-2">
               <textarea
                 className="input min-h-[64px] resize-none"
                 placeholder={
-                  floorMine
-                    ? '轮到你了，说点什么…'
-                    : state.talkOpen
-                      ? '自由讨论中：可以直接说完，也可以先排队等麦克风'
-                      : '随时可以补充发言'
+                  whisperTo
+                    ? `只给 ${seatName(state.visible, whisperTo)} 看：不占麦，也不进公共发言记录`
+                    : floorMine
+                      ? '轮到你了，说点什么…'
+                      : state.talkOpen
+                        ? '自由讨论中：可以直接说完，也可以先排队等麦克风'
+                        : '随时可以补充发言'
                 }
                 value={draft}
                 onChange={(e) => setDraft(e.target.value)}
@@ -312,7 +362,7 @@ export function GamePage({ code }: { code: string }) {
               />
               <div className="flex flex-col gap-2">
                 <button type="button" className="btn-primary" onClick={submitSpeech} disabled={!draft.trim()}>
-                  发送
+                  {whisperTo ? '私聊' : '发送'}
                 </button>
               </div>
             </div>
@@ -435,7 +485,9 @@ function Transcript({
                     ? 'border-line/60 text-slate-400'
                     : style.tone === 'stream'
                       ? 'border-accent/30 bg-accent/5 text-slate-200'
-                      : 'border-line/70'
+                      : style.tone === 'whisper'
+                        ? 'border-dashed border-line bg-ink/45 text-slate-300'
+                        : 'border-line/70'
         // Only a spoken line can be answered, and never your own.
         const canReply = !!onReply && line.kind === 'speech' && !!line.seatId && line.seatId !== selfSeatId
         return (
@@ -532,6 +584,7 @@ function PhaseActions({
       <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-3">
         <p className="mb-2 text-xs text-emerald-200">
           搜证阶段（随机抽取）：轮到你抽一次，抽到什么算什么。
+          {phase.revealOnFind ? '本轮搜到的线索当场公开。' : ''}
         </p>
         <div className="flex flex-wrap items-center gap-2">
           <button
@@ -559,6 +612,7 @@ function PhaseActions({
       <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-3">
         <p className="mb-2 text-xs text-emerald-200">
           搜证阶段：{myTurn ? '选一个位置翻查，背面写着那里有什么' : '还没轮到你，按阶段顺序依次搜证。'}
+          {phase.revealOnFind ? '本轮搜到的线索当场公开。' : ''}
         </p>
         <div className="flex flex-wrap gap-2">
           {options.length === 0 ? (
@@ -853,6 +907,18 @@ function RolePanel({
 
       <div className="sheet">
         <SectionTitle>我的线索</SectionTitle>
+        {/* Items come from the cards this seat has already picked up. They are
+            the keys to the deep-dive clues, so they sit above the list. */}
+        {visible.items.length > 0 ? (
+          <div className="mb-3 flex flex-wrap items-center gap-1.5">
+            <span className="text-xs text-slate-500">身上物品</span>
+            {visible.items.map((item) => (
+              <span key={item} className="chip">
+                {item}
+              </span>
+            ))}
+          </div>
+        ) : null}
         {visible.ownClues.length === 0 ? (
           <p className="text-xs text-slate-500">还没有私密线索，搜证阶段再来看。</p>
         ) : (

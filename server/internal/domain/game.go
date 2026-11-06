@@ -15,6 +15,10 @@ const (
 	VisPublic = "public"
 	// VisSeatPrefix restricts an event to one seat: "seat:<seatID>".
 	VisSeatPrefix = "seat:"
+	// VisPairPrefix restricts an event to two seats: "pair:<seatA>,<seatB>".
+	// A whisper is the only user today — the sender and the listener, nobody
+	// else, not even the host.
+	VisPairPrefix = "pair:"
 	// VisDM restricts an event to the host seat.
 	VisDM = "dm"
 )
@@ -100,6 +104,10 @@ type ClueState struct {
 	FoundAt      time.Time `json:"foundAt,omitempty"`
 	RevealedAt   time.Time `json:"revealedAt,omitempty"`
 	PrivateOwner string    `json:"privateOwner,omitempty"`
+	// Unlocked is set once a keyword-triggered private clue has fired. A
+	// private clue with keywords stays sealed (invisible even to its owner)
+	// until somebody says one of them out loud.
+	Unlocked bool `json:"unlocked,omitempty"`
 }
 
 // Event is an append-only, visibility-scoped game log entry.
@@ -120,10 +128,14 @@ type Event struct {
 
 // Event types.
 const (
-	EvSystem     = "system"
-	EvPhase      = "phase"
-	EvDM         = "dm"
-	EvSpeech     = "speech"
+	EvSystem = "system"
+	EvPhase  = "phase"
+	EvDM     = "dm"
+	EvSpeech = "speech"
+	// EvWhisper is a private line between two seats. It is stored like any other
+	// line (the replay needs it) but never reaches the table, the recap, or the
+	// keyword gate.
+	EvWhisper    = "whisper"
 	EvAgentDelta = "agent.delta"
 	// EvThinking marks an AI seat that is composing an answer. It is transient
 	// like EvAgentDelta (published, never stored) and Meta["state"] is either
@@ -153,6 +165,9 @@ type Game struct {
 	Votes      map[string]string    `json:"votes"` // seatID -> roleID
 	NextSeq    int                  `json:"nextSeq"`
 	Events     []Event              `json:"events"`
+	// Items is the per-seat inventory: seatID -> item names. Items only gate
+	// which clue a seat may search; they never travel into a prompt as prose.
+	Items map[string][]string `json:"items,omitempty"`
 	// Recap is the compressed retelling of everything public up to UptoSeq.
 	// It is what keeps a long argument from crowding the role book out of the
 	// prompt; nil means nothing has been compressed yet.
@@ -184,7 +199,43 @@ func NewGame(id, roomID, scriptID string, seats []Seat) *Game {
 		Seats:     seats,
 		ClueState: map[string]ClueState{},
 		Votes:     map[string]string{},
+		Items:     map[string][]string{},
 	}
+}
+
+// GrantItem puts an item in a seat's inventory. It reports whether the seat
+// did not have it already, so the caller can log the pickup exactly once.
+func (g *Game) GrantItem(seatID, item string) bool {
+	if seatID == "" || item == "" {
+		return false
+	}
+	for _, got := range g.Items[seatID] {
+		if got == item {
+			return false
+		}
+	}
+	if g.Items == nil {
+		g.Items = map[string][]string{}
+	}
+	g.Items[seatID] = append(g.Items[seatID], item)
+	return true
+}
+
+// HasItems reports whether the seat holds every named item.
+func (g *Game) HasItems(seatID string, items []string) bool {
+	if len(items) == 0 {
+		return true
+	}
+	have := map[string]bool{}
+	for _, it := range g.Items[seatID] {
+		have[it] = true
+	}
+	for _, want := range items {
+		if want != "" && !have[want] {
+			return false
+		}
+	}
+	return true
 }
 
 // SeatByID returns a pointer to the live seat.

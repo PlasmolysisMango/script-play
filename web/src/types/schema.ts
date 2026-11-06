@@ -160,6 +160,9 @@ export const visibleSchema = z.object({
     // has to guess why the order is random or why the list is hidden.
     order: z.string().optional().default(''),
     searchMode: z.string().optional().default(''),
+    // Set by the script: this round is read aloud, so the find is public at
+    // once and the seat never gets a lone "公开" button.
+    revealOnFind: z.boolean().nullish().transform((v) => v ?? false),
     perPlayerPick: z.number().optional().default(0),
     speechPerPlayer: z.number().optional().default(0),
   }),
@@ -171,6 +174,8 @@ export const visibleSchema = z.object({
   ownClues: z.array(clueSchema).nullish().transform((v) => v ?? []),
   publicClues: z.array(clueSchema).nullish().transform((v) => v ?? []),
   ownFacts: z.array(factSchema).nullish().transform((v) => v ?? []),
+  // Items gate the deep-dive clues; the server sends them per seat.
+  items: z.array(z.string()).nullish().transform((v) => v ?? []),
   transcript: z.array(transcriptLineSchema).nullish().transform((v) => v ?? []),
   truth: truthSchema.nullish().transform((v) => v ?? undefined),
   seats: z.array(publicSeatSchema).nullish().transform((v) => v ?? []),

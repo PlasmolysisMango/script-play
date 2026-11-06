@@ -72,7 +72,11 @@
           "enum": ["round_robin", "random", "host_assigned", ""],
           "description": "行动顺序：round_robin 按入座轮流，random 阶段开始时打乱一次，host_assigned 由主持人一次性排好整轮。"
         },
-        "timeoutSec": { "type": "integer", "minimum": 0 }
+        "timeoutSec": { "type": "integer", "minimum": 0 },
+        "revealOnFind": {
+          "type": "boolean",
+          "description": "搜证公开：本轮抽到的线索立即对全场公开，不必玩家再点「公开」。适用于「本轮调查到的线索均为公开线索」的剧本；默认 false（只可转述）。"
+        }
       }
     },
     "role": {
@@ -128,6 +132,12 @@
         "back": { "type": "string", "description": "实体线索卡背面的字（地点＋编号，如「船长 07」）。搜证选项只下发这一行，不含 title 与 content。" },
         "content": { "type": "string" },
         "ownerRoleId": { "type": "string", "description": "私人物品：只有该角色初始可见，且只能由该角色搜到。" },
+        "subjectRoleId": { "type": "string", "description": "搜身线索：这条线索说谁。该角色本人不能抽到它，其他人照常可搜（与 ownerRoleId 相反：卡在公共池里）。" },
+        "mustReveal": { "type": "boolean", "description": "本线索必须公开：卡面写「本条线索必须公开」时置 true。搜到即向全场公开，不受所在搜证阶段的 revealOnFind 影响。" },
+        "grantsItem": { "type": "string", "description": "搜到即获得的物品（如「钳子」），进入该座位的物品栏。" },
+        "requiresItems": { "type": "array", "items": { "type": "string" }, "description": "持有这些物品才能搜到本条（深入调查的门槛）。" },
+        "unlockedBy": { "type": "array", "items": { "type": "string" }, "description": "必须先搜到（或公开）这些线索，本条才会出现在搜证列表里。" },
+        "keywords": { "type": "array", "items": { "type": "string" }, "description": "关键词：配合 ownerRoleId 使用。有人当众说出（或在公开线索里出现）其中一个词时，该角色获得这条私密线索；在此之前连持有者自己也看不到。" },
         "isPublic": { "type": "boolean", "description": "true 表示开局即公共线索。" },
         "imageUrl": { "type": "string" },
         "links": {

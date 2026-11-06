@@ -29,6 +29,18 @@ export type Clue = {
   back?: string
   content?: string
   ownerRoleId?: string
+  /** 搜身线索：说的是谁，本人抽不到。 */
+  subjectRoleId?: string
+  /** 本线索必须公开（卡面写「本条线索必须公开」）。 */
+  mustReveal?: boolean
+  /** 搜到即获得的物品。 */
+  grantsItem?: string
+  /** 持有这些物品才能搜到。 */
+  requiresItems?: string[]
+  /** 必须先搜到的前置线索。 */
+  unlockedBy?: string[]
+  /** 关键词触发的私密线索（配合 ownerRoleId）。 */
+  keywords?: string[]
   isPublic?: boolean
   imageUrl?: string
   links?: { roles?: string[]; secrets?: string[]; facts?: string[] }
@@ -46,6 +58,8 @@ export type Phase = {
   searchMode?: string
   order?: string
   timeoutSec?: number
+  /** 本轮搜到的线索立即公开。 */
+  revealOnFind?: boolean
 }
 
 export type Fact = { id?: string; text?: string }

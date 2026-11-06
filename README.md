@@ -106,6 +106,13 @@ cd server && SP_ADMIN_USERNAME=admin SP_ADMIN_PASSWORD='换成你的密码' go r
 
 三者都落进同一种记录，导入后可以在「可视化」与「JSON」两个模式之间来回切换，不会丢字段。
 
+转写完成的文件先在本机跑一遍引擎校验，比在工作台里等 422 快：
+
+```bash
+make check-scripts                                  # scripts/*/script.json 全部校验
+cd server && go run ./cmd/scriptcheck ../scripts/K11-再见苏西/script.json
+```
+
 ### 2. 顶层结构与体积
 
 ```json
@@ -151,9 +158,9 @@ cd server && SP_ADMIN_USERNAME=admin SP_ADMIN_PASSWORD='换成你的密码' go r
 | 分组 | 字段 |
 |---|---|
 | `meta` | `title`、`author`—、`summary`—、`difficulty`—（`easy`/`medium`/`hard`/空）、`tags`—、`playerCount{min,max}`、`durationMin`— |
-| `phases[]` | `id`、`type`（`reading`/`opening`/`search`/`discussion`/`vote`/`reveal`）、`name`、`round`—、`dmScript`—（主持人手册，Markdown）、`cluePool`—（线索 id 数组）、`perPlayerPick`—（搜证段必填）、`speechPerPlayer`—（讨论段必填）、`searchMode`—、`order`—、`timeoutSec`— |
+| `phases[]` | `id`、`type`（`reading`/`opening`/`search`/`discussion`/`vote`/`reveal`）、`name`、`round`—、`dmScript`—（主持人手册，Markdown）、`cluePool`—（线索 id 数组）、`perPlayerPick`—（搜证段必填）、`speechPerPlayer`—（讨论段必填）、`searchMode`—、`revealOnFind`—（搜证段：搜到即公开）、`order`—、`timeoutSec`— |
 | `roles[]` | `id`、`name`、`personaId`—、`public{intro,appearance}`—、`private{script,secrets[],goals[],knownFactIds[]}` |
-| `clues[]` | `id`、`title`、`content`（Markdown）、`location`—、`back`—（卡背，搜证选项只露这一行）、`ownerRoleId`—、`isPublic`—、`imageUrl`—、`links{roles,secrets,facts}`— |
+| `clues[]` | `id`、`title`、`content`（Markdown）、`location`—、`back`—（卡背，搜证选项只露这一行）、`ownerRoleId`—、`subjectRoleId`—、`mustReveal`—、`isPublic`—、`grantsItem`—、`requiresItems`—、`unlockedBy`—、`keywords`—、`imageUrl`—、`links{roles,secrets,facts}`— |
 | `facts[]` | `id`、`text` |
 | `truth` | `killerRoleId`、`method`—、`motive`—、`timeline[]`—、`summary`—（复盘全文，Markdown） |
 
@@ -179,6 +186,10 @@ cd server && SP_ADMIN_USERNAME=admin SP_ADMIN_PASSWORD='换成你的密码' go r
 | `knownFactIds` 里的 id 必须存在于 `facts` | `roles[i].private.knownFactIds` |
 | 线索 id 非空且唯一 | `clues[i].id` |
 | `ownerRoleId` 与 `links.roles` 必须是已存在的角色 id | `clues[i].ownerRoleId` / `.links.roles` |
+| `subjectRoleId` 必须是已存在的角色 id，且不能等于 `ownerRoleId` | `clues[i].subjectRoleId` |
+| `unlockedBy` 里的 id 必须存在，且不能指向自己 | `clues[i].unlockedBy` |
+| `requiresItems` 不能有空串 | `clues[i].requiresItems` |
+| 写了 `keywords` 就必须有 `ownerRoleId`（关键词只用来开私人物品／记忆碎片） | `clues[i].keywords` |
 | 事实 id 非空 | `facts[i].id` |
 | 凶手角色必须存在（可留空，但复盘会说不出凶手） | `truth.killerRoleId` |
 | 至少一个阶段，阶段 id 非空、类型合法 | `phases` / `phases[i].id` / `.type` |
@@ -198,7 +209,40 @@ cd server && SP_ADMIN_USERNAME=admin SP_ADMIN_PASSWORD='换成你的密码' go r
 4. `searchMode`：`pick` 玩家看标题自选，`random` 只给「随机抽取」（抽到什么算什么，内容仍只有抽取者可见）；
 5. `order`：`round_robin` 按入座顺序（主持人优先）、`random` 阶段开始时随机排一次、
    `host_assigned` 进入阶段时挂起，等主持人一次性排好整轮；
-6. 一次行动一轮，配额用尽才轮到下一位；`timeoutSec` 为 0 表示用服务端默认（`SP_FLOOR_TIMEOUT_SEC`）。
+6. 一次行动一轮，配额用尽才轮到下一位；`timeoutSec` 为 0 表示用服务端默认（`SP_FLOOR_TIMEOUT_SEC`）；
+7. **搜证段的线索取不到就不发**：`subjectRoleId`（本人）、缺 `requiresItems`、`unlockedBy` 里的线索
+   还没露面，这三种情况该卡根本不出现在搜证列表里；`random` 抽到也会自动跳开。
+   一个座位如果剩下的全是它取不了的卡，引擎把这轮配额判完并写一条 `system` 说明，不会把人卡在那里点空按钮；
+8. `revealOnFind: true` 的搜证段，搜到立刻按公开处理（发 `clue.revealed` 公开事件、进 `publicClues`），
+   不再出现「公开」按钮；不设则仍是「搜到归自己，要念再点公开」；
+   卡面写「本条线索必须公开」的，把单张卡的 `mustReveal` 置 `true`，不管它在哪一轮都当场公开；
+9. `grantsItem` 搜到即进该座位的物品栏（`visible.items`），物品按座位隔离，不共享；
+10. `keywords` 是记忆碎片的开关：只有当众发言的正文或**已公开**线索的正文里出现这些词时，
+    碎片才对它的 `ownerRoleId` 可见（私有搜证不触发）；在此之前连持有者自己也看不到。
+
+### 5.1 常见规则用什么字段表达
+
+| 剧本里常写的规则 | 写法 | 引擎行为 |
+|---|---|---|
+| 这一轮搜到的线索全场公开 | `search` 段 `revealOnFind: true` | 搜到即公开，自动写公开事件 |
+| 这**张**卡必须公开（其余只可口述） | 卡上 `mustReveal: true` | 单张卡搜到即公开，不受阶段设置影响 |
+| 除卡面注明公开的以外只可口述 | 默认（不设） | 搜到只进自己的线索，可随时点「公开」 |
+| 抽到自己的搜身线索放回重抽 | `subjectRoleId` | 该角色看不到也抽不到，卡仍在池里给别人 |
+| 这张卡只能某人调查（如「许迎可调查 01」） | `ownerRoleId` | 池里只有该角色可见可取 |
+| 卡面「如有物品 XX」才能查 | `requiresItems` | 缺物品时不出现，强行点会被拦并说明缺什么 |
+| 先搜到 A，B 才会浮出来 | `unlockedBy: ["A"]` | A 未找到也未被公开时，B 不出现 |
+| 卡面「获得物品 XX」 | `grantsItem` | 搜到即入该座位物品栏 |
+| 记忆碎片按关键词触发 | `ownerRoleId` + `keywords` | 关键词出现在当众发言或公开线索里，碎片才对持有者解锁 |
+| 两两私聊、单独交换情报 | `type: discussion` 段，玩家自己发 `whisper.send` | 只有双方看得到，不占麦也不进前情提要；AI 被私聊会私下回一句 |
+| 必须当众念出、不能把卡递给别人 | 写进 `dmScript` | 社交规则，引擎只负责记录（不阻止转述） |
+| 要三个人同意才能开挖 | `requiresItems` + `dmScript` | 物品由引擎管，人数协商写在手册里 |
+| 指认凶手、按被指认者分结局 | `type: vote` + `truth` + `reveal` 段 `dmScript` | 引擎计票并锁定得票者，分支写进复盘文本 |
+| 固定人数、每人一角色 | `meta.playerCount` + `roles[]` | 房间座位数受剧本限制，AI 补位 |
+
+能力边界：引擎只管「谁能看到、谁能取到、取了之后多出什么」。
+**不**建模的：私人聊天室（`whisper` 是一对一耳语，开不了五六个人的密室）、限时倒计时播报（只有 `timeoutSec`）、
+手牌交换、给他人递物品。随机分配角色由房间完成（开局 `rand.Shuffle` 后发牌），不需要剧本字段。
+私聊只在讨论段开放，且**不**触发记忆碎片：不公开说出来就不算被听见，避免有人用私聊当解锁器。
 
 ### 6. 正文与配图
 
@@ -231,6 +275,9 @@ cd server && SP_ADMIN_USERNAME=admin SP_ADMIN_PASSWORD='换成你的密码' go r
 - [ ] 每个搜证阶段的 `cluePool` 都**非空**，且已把该轮想被搜到的线索全部列进去；
 - [ ] 每条线索都有去处：在某个 `cluePool` 里，或标了 `isPublic` / `ownerRoleId`；
 - [ ] 每个角色的 `private.script` 都写全了（空的本子会被校验拦下）；
+- [ ] 写了 `subjectRoleId` 的搜身卡，没有同时写 `ownerRoleId`，且确认它确实在第二个搜证池里；
+- [ ] 每张 `requiresItems` / `unlockedBy` 的深入调查卡，对应的物品卡与前置卡都在本轮之前的池子里；
+- [ ] 关键词碎片逐个试过：把关键词打在发言里能看到解锁；碎片本身不要放进搜证池（会被自己的正文触发）；
 - [ ] `truth.killerRoleId` 指向真实存在的角色，且和线索、秘密对得上；
 - [ ] 人数区间不超过角色数；
 - [ ] 角色本里的 Markdown 在「预览」里看过一遍：标题、时间线、列表没有错位；

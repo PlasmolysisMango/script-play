@@ -131,7 +131,7 @@ export function mergeWithState(lines: Line[], state: SeatState): Line[] {
 
 export type EventStyle = {
   label: string
-  tone: 'phase' | 'dm' | 'speech' | 'system' | 'clue' | 'vote' | 'reveal' | 'stream' | 'leak'
+  tone: 'phase' | 'dm' | 'speech' | 'whisper' | 'system' | 'clue' | 'vote' | 'reveal' | 'stream' | 'leak'
 }
 
 export function styleOf(kind: string): EventStyle {
@@ -142,6 +142,8 @@ export function styleOf(kind: string): EventStyle {
       return { label: '主持人', tone: 'dm' }
     case 'speech':
       return { label: '发言', tone: 'speech' }
+    case 'whisper':
+      return { label: '私聊', tone: 'whisper' }
     case 'agent.delta':
       return { label: '正在说', tone: 'stream' }
     case 'clue.found':

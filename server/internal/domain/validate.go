@@ -79,9 +79,35 @@ func (s *Script) Validate() []ValidationError {
 		if c.OwnerRoleID != "" && !roleIDs[c.OwnerRoleID] {
 			add(p+".ownerRoleId", "未知角色：%s", c.OwnerRoleID)
 		}
+		if c.SubjectRoleID != "" && !roleIDs[c.SubjectRoleID] {
+			add(p+".subjectRoleId", "未知角色：%s", c.SubjectRoleID)
+		}
+		if c.SubjectRoleID != "" && c.SubjectRoleID == c.OwnerRoleID {
+			add(p+".subjectRoleId", "搜身线索不能同时是本人私人物品（那样谁都搜不到）")
+		}
+		for j, item := range c.RequiresItems {
+			if strings.TrimSpace(item) == "" {
+				add(fmt.Sprintf("%s.requiresItems[%d]", p, j), "物品名不能为空")
+			}
+		}
+		if len(c.Keywords) > 0 && c.OwnerRoleID == "" {
+			add(p+".keywords", "关键词只能用来解锁私人物品（需同时填 ownerRoleId）")
+		}
 		for _, rid := range c.Links.Roles {
 			if !roleIDs[rid] {
 				add(p+".links.roles", "未知角色：%s", rid)
+			}
+		}
+	}
+	// UnlockedBy may name any clue, so it needs the full id set first.
+	for i, c := range s.Clues {
+		p := fmt.Sprintf("clues[%d]", i)
+		for _, cid := range c.UnlockedBy {
+			if !clueIDs[cid] {
+				add(p+".unlockedBy", "未知线索：%s", cid)
+			}
+			if cid == c.ID {
+				add(p+".unlockedBy", "线索不能以自己为前提，否则永远打不开")
 			}
 		}
 	}

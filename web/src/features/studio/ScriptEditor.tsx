@@ -505,6 +505,18 @@ function PhaseSection({
                         onChange={(e) => patch(index, { perPlayerPick: Number(e.target.value) || 1 })}
                       />
                     </Field>
+                    <div className="flex items-end pb-1">
+                      <label className="flex items-center gap-2 text-xs text-slate-300">
+                        <input
+                          type="checkbox"
+                          className="h-4 w-4 accent-[rgb(var(--accent))]"
+                          checked={!!phase.revealOnFind}
+                          disabled={disabled}
+                          onChange={(e) => patch(index, { revealOnFind: e.target.checked })}
+                        />
+                        搜到的线索立即公开
+                      </label>
+                    </div>
                   </>
                 ) : null}
                 {phase.type === 'discussion' ? (
@@ -819,14 +831,24 @@ function ClueSection({
         {clues.map((clue, index) => {
           const key = String(clue.id ?? index)
           const isOpen = !!open[key]
+          // Collapsed rows are how an author scans fifty cards: the badges must
+          // say at a glance what the card is gated by.
+          const badges = [
+            clue.isPublic ? '公共' : '',
+            clue.mustReveal ? '必公开' : '',
+            clue.ownerRoleId ? '私人物品' : '',
+            clue.subjectRoleId ? '搜身' : '',
+            clue.requiresItems?.length ? '需物品' : '',
+            clue.unlockedBy?.length ? '有前提' : '',
+            clue.keywords?.length ? '关键词' : '',
+            clue.imageUrl ? '有图' : '',
+          ].filter(Boolean)
           return (
             <Item
               key={key}
               open={isOpen}
               title={clue.title || '未命名线索'}
-              meta={`${clue.id ?? '无 id'}${clue.isPublic ? ' · 公共' : ''}${clue.ownerRoleId ? ' · 私人物品' : ''}${
-                clue.imageUrl ? ' · 有图' : ''
-              }`}
+              meta={`${clue.id ?? '无 id'}${badges.map((b) => ` · ${b}`).join('')}`}
               onToggle={() => setOpen((o) => ({ ...o, [key]: !isOpen }))}
               onUp={() => onChange(moveAt(clues, index, -1))}
               onDown={() => onChange(moveAt(clues, index, 1))}
@@ -880,7 +902,69 @@ function ClueSection({
                     开局即公共线索
                   </label>
                 </div>
+                <div className="flex items-end pb-1">
+                  <label className="flex items-center gap-2 text-xs text-slate-300">
+                    <input
+                      type="checkbox"
+                      className="h-4 w-4 accent-[rgb(var(--accent))]"
+                      checked={!!clue.mustReveal}
+                      disabled={disabled}
+                      onChange={(e) => patch(index, { mustReveal: e.target.checked })}
+                    />
+                    搜到必须公开
+                  </label>
+                </div>
+                <Field label="搜身角色" hint="这条线索说的是谁：本人抽不到，别人照常可搜">
+                  <select
+                    className="input text-xs"
+                    value={clue.subjectRoleId ?? ''}
+                    disabled={disabled}
+                    onChange={(e) => patch(index, { subjectRoleId: e.target.value })}
+                  >
+                    <option value="">无</option>
+                    {roles.map((r) => (
+                      <option key={r.id} value={r.id}>
+                        {r.label}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+                <Field label="获得物品" hint="搜到即放进该座位物品栏，如「钳子」">
+                  <input
+                    className="input text-xs"
+                    value={clue.grantsItem ?? ''}
+                    disabled={disabled}
+                    onChange={(e) => patch(index, { grantsItem: e.target.value })}
+                  />
+                </Field>
+                <Field label="需要物品" hint="顿号分隔；缺物品搜不到（深入调查的门槛）">
+                  <input
+                    className="input text-xs"
+                    value={(clue.requiresItems ?? []).join('、')}
+                    disabled={disabled}
+                    onChange={(e) => patch(index, { requiresItems: splitIds(e.target.value) })}
+                  />
+                </Field>
+                <Field label="关键词" hint="顿号分隔；有人说出其中一个，持有者才看到这条">
+                  <input
+                    className="input text-xs"
+                    value={(clue.keywords ?? []).join('、')}
+                    disabled={disabled}
+                    onChange={(e) => patch(index, { keywords: splitIds(e.target.value) })}
+                  />
+                </Field>
               </div>
+
+              <IdChips
+                label="前提线索"
+                hint="必须先搜到这些线索，本条才会出现在搜证列表"
+                options={clues
+                  .filter((c) => c.id && c.id !== clue.id)
+                  .map((c) => ({ id: String(c.id), label: c.title || String(c.id) }))}
+                value={clue.unlockedBy ?? []}
+                disabled={disabled}
+                onChange={(unlockedBy) => patch(index, { unlockedBy })}
+              />
 
               <MarkdownField
                 label="线索内容"

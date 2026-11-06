@@ -219,6 +219,11 @@ func writeFacts(u *strings.Builder, v Visible) {
 }
 
 func writeClues(u *strings.Builder, v Visible) {
+	if len(v.Items) > 0 {
+		// Items exist so the seat knows which deep-dive cards it may open; the
+		// table only learns about them if the seat says so.
+		fmt.Fprintf(u, "\n【你手上的物品】%s\n", strings.Join(v.Items, "、"))
+	}
 	if len(v.OwnClues) > 0 {
 		// Nobody else can see these: the only ways out are describing what they
 		// showed, or the explicit reveal tool.
@@ -278,7 +283,7 @@ func renderMiddle(v Visible, fresh []TranscriptLine, avail int) string {
 		if start < len(fresh) {
 			u.WriteString("\n【刚刚发生】\n")
 			for _, l := range fresh[start:] {
-				fmt.Fprintf(&u, "- [%s] %s\n", speakerOf(l), oneLine(l.Text))
+				fmt.Fprintf(&u, "- [%s] %s\n", speakerOf(l), lineBody(l))
 			}
 			spent += used
 		}
@@ -318,7 +323,7 @@ func renderMiddle(v Visible, fresh []TranscriptLine, avail int) string {
 
 	u.WriteString("\n【公开发言记录】\n")
 	for i, l := range shown {
-		fmt.Fprintf(&u, "%d. [%s] %s\n", i+1, speakerOf(l), oneLine(l.Text))
+		fmt.Fprintf(&u, "%d. [%s] %s\n", i+1, speakerOf(l), lineBody(l))
 	}
 	return u.String()
 }
@@ -374,6 +379,16 @@ func speakerOf(l TranscriptLine) string {
 		return "主持人"
 	}
 	return "系统"
+}
+
+// lineBody marks a private aside inside the shared logs. Without the marker the
+// model reads a whisper as something said to the whole table and answers it in
+// public — which is exactly the secret it was trusted with.
+func lineBody(l TranscriptLine) string {
+	if l.Kind == domain.EvWhisper {
+		return "（私聊）" + oneLine(l.Text)
+	}
+	return oneLine(l.Text)
 }
 
 // afterSeq drops the lines a recap already covers. The transcript is ordered by

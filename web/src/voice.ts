@@ -207,6 +207,11 @@ export function narrationFor(ev: GameEvent, selfSeatId: string): Narration | nul
       // Never read the player's own line back to them.
       if (!ev.seatId || ev.seatId === selfSeatId) return null
       return { text: `${ev.speaker || '有人'}说：${text}`, seed: ev.roleId || ev.seatId, kind: 'speech' }
+    case 'whisper':
+      // Private to this seat, so it is read the same way a real whisper would be
+      // heard — quietly, and by one person.
+      if (!ev.seatId || ev.seatId === selfSeatId) return null
+      return { text: `${ev.speaker || '有人'}低声对你说：${text}`, seed: ev.roleId || ev.seatId, kind: 'speech' }
     case 'dm':
       return { text: `主持人：${text}`, seed: 'narrator', kind: 'dm' }
     case 'clue.revealed':

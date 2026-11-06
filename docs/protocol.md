@@ -173,6 +173,7 @@ Content-Type: application/json
 
 一个连接绑定一个座位。所有人收到的事件都先经过同一条可见性管线
 （`engine.EventVisibleTo` + `VisibleFor`），不同座位收到的字段不同。
+可见性共四种：`public`、`seat:<座位id>`、`pair:<a>,<b>`（两个座位，用于私聊）、`dm`（仅主持人）。
 
 ### 下行：单个事件对象（无信封）
 
@@ -189,10 +190,11 @@ Content-Type: application/json
 | `phase` | 进入新阶段 | public |
 | `dm` | 主持人播报（`dmScript`） | public |
 | `speech` | 一条完整发言（真人或 AI 定稿） | public |
+| `whisper` | 私聊：一对一的一句，`meta.to` 是收话座位 | `pair:<a>,<b>`（双方，不含主持人） |
 | `agent.delta` | AI 流式片段（不落库） | public |
 | `system` | 轮到你发言 / 搜证超时等提示 | public 或 `seat:<id>` |
 | `clue.found` | 搜到线索（内容私有） | `seat:<id>` |
-| `clue.revealed` | 公开某条线索 | public |
+| `clue.revealed` | 公开某条线索；`revealOnFind` 阶段搜到时也走这条（公开） | public |
 | `vote` | 某人投票 | public（票面角色名） |
 | `vote.result` | 计票结果 | public |
 | `reveal` | 复盘真相 | public（仅在 reveal 阶段后） |
@@ -207,6 +209,7 @@ Content-Type: application/json
 { "type": "search.clue", "clueId": "c1" }   // 自选搜证：按 id 取线索
 { "type": "search.draw" }                      // 随机搜证：服务端在可用池里抽一条
 { "type": "clue.reveal", "clueId": "c1" }
+{ "type": "whisper.send", "to": "seat_b", "text": "钳子是我拿的" }  // 私聊，只在讨论段可用
 { "type": "vote.cast", "roleId": "r3" }
 { "type": "order.set", "seatIds": ["seat_a", "seat_b"] }  // 主持人定序：必须是全部玩家的一个排列
 { "type": "host.skip" }   // 进入下一阶段（帧名保留旧名）：UI 写「进入下一阶段：X」，落盘一条主持人的 dm
@@ -225,6 +228,22 @@ Content-Type: application/json
 `seatIds` 少一个或多一个都属于非法命令，以 `error` 帧回写并继续等。
 搜证阶段的 `searchMode` 同是剧本字段：`pick` 给列表由玩家选，`random` 不给列表，
 玩家只能发 `search.draw`，服务端在「仍可搜」的池里均匀抽一条（越权用 `search.clue` 会被拒）。
+「仍可搜」已经扣掉三类卡：`subjectRoleId` 是本座位自己的搜身线索、`requiresItems` 没拿齐、
+`unlockedBy` 里的前提线索还没露面。一个座位如果剩下的全是取不了的卡，引擎把这轮配额判完，
+写一条 `system`（仅本座位），不给人一个只会报错的按钮。
+剧本把该搜证段设为 `revealOnFind: true` 时，`search.clue` / `search.draw` 成功即按公开处理：
+`ClueState.Revealed` 置位、发 public 的 `clue.revealed`（`meta` 带 `title`/`content`），不再发私有的 `clue.found`。
+单张卡带了 `mustReveal: true`（卡面写「本条线索必须公开」）时，即使所在阶段没开 `revealOnFind`，也走同一条公开路径。
+带有 `grantsItem` 的卡会在同一时刻写一条仅本座位可见的 `system`：「你获得了物品【X】」；
+带有 `keywords` 的私人物品（记忆碎片）则会在「公开线索正文」或「当众发言」出现命中词时自动解锁。
+
+`whisper.send` 是讨论段专用的旁路命令：不占麦、不进发言队列，也不消耗自由讨论的发言配额，
+所以两个人小声说话不会把整桌的麦克风堵住。它写一条 `whisper` 事件，可见范围是
+`pair:<座位A>,<座位B>`（ID 排序后拼接），第三人和主持人都收不到；因此它既不触发关键词解锁
+（没当众说出来就不算听见），也不进入前情提要（提要只收 public 事件）。
+非讨论阶段（搜证 / 投票 / 复盘）发私聊会被拒绝；观战者没有私聊权；不能发给自己。
+收话方是 AI 座位且发话方是真人时，引擎在后台补一次「只能回这一句私聊」的模型调用，
+回成 `whisper` 或一条「没有接这条私聊」的私有 `system`；AI 发给 AI 不自动回，避免两边互相私聊停不下来。
 一次行动一轮：座位仍欠次数时保持发言权/搜证权不切换，配额用尽才按顺序交给下一位。
 
 错误以 `{ "type": "error", "message": "..." }` 回写，不关闭连接。
@@ -243,6 +262,7 @@ Content-Type: application/json
     "ownRole": { "id", "name", "public", "private" },   // 只有自己的
     "publicRoles": [{ "intro", "appearance" }],
     "ownClues": [Clue], "publicClues": [Clue], "ownFacts": [Fact],
+    "items": ["钳子", "手电筒"],                       // 本座位物品栏（grantsItem 授予）
     "transcript": [{ "seq", "kind", "seatId", "roleId", "speaker", "text", "at" }],
     "truth": Truth,                                     // 仅 reveal 阶段 + 主持人视图
     "seats": [PublicSeat]
@@ -263,11 +283,12 @@ Content-Type: application/json
 }
 ```
 
-所有数组字段（`ownClues` / `publicClues` / `ownFacts` / `transcript` / `seats` / `search` / `order`）在无内容时
+所有数组字段（`ownClues` / `publicClues` / `ownFacts` / `items` / `transcript` / `seats` / `search` / `order`）在无内容时
 是 `[]` 而非 `null`：严格 JSON 客户端不允许 `null`。
 
 `visible` 中**不存在**的字段就是该座位拿不到的信息：`truth`、他人的 `private`、未公开线索、
-其他座位的 `personaId` / `modelId` 都在结构层面被排除。
+其他座位的 `personaId` / `modelId` 都在结构层面被排除。带 `keywords` 的私人物品（记忆碎片）
+在关键词被说出之前，连它的持有者在 `ownClues` 里也看不到；`visible.items` 只含本座位的物品。
 
 ## 7. 信息隔离的保证方式
 

@@ -17,6 +17,10 @@ const (
 	ToolSpeak  = "speak"
 	ToolPass   = "pass"
 	ToolReveal = "reveal"
+	// ToolWhisper is a line only one other seat can see. It leaves the public
+	// floor untouched, which is why it is a tool of its own rather than a flag
+	// on speak.
+	ToolWhisper = "whisper"
 )
 
 // AgentAction is the single tool call an AI seat returns for one turn.
@@ -25,7 +29,9 @@ type AgentAction struct {
 	Text    string `json:"text,omitempty"`
 	ReplyTo string `json:"replyTo,omitempty"`
 	ClueID  string `json:"clueId,omitempty"`
-	Reason  string `json:"reason,omitempty"`
+	// To is the seat a whisper is addressed to.
+	To     string `json:"to,omitempty"`
+	Reason string `json:"reason,omitempty"`
 }
 
 // ToolSpec is one tool advertised to the model.
@@ -117,10 +123,17 @@ func cleanSpeech(s string) string {
 }
 
 // speechToolsLocked advertises what this seat may do right now.
-func (a *Actor) speechToolsLocked(seat domain.Seat, ownClues []string) []ToolSpec {
+func (a *Actor) speechToolsLocked(seat domain.Seat, ownClues []string, targets []domain.Seat) []ToolSpec {
 	tools := []ToolSpec{
 		{Name: ToolSpeak, Args: `{"tool":"speak","text":"你要说的话","replyTo":"可选，座位id"}`, Desc: "说一句台词。这是最常用的动作。"},
 		{Name: ToolPass, Args: `{"tool":"pass","reason":"为什么不说"}`, Desc: "这轮不发言。不想说、没有新信息、或不想回应时使用。"},
+	}
+	if len(targets) > 0 {
+		tools = append(tools, ToolSpec{
+			Name: ToolWhisper,
+			Args: fmt.Sprintf(`{"tool":"whisper","to":"%s","text":"只给对方看的话"}`, targets[0].ID),
+			Desc: "只对一个人耳语一句，其他玩家（包括主持人）看不到。适合单独交换情报、拉拢或串供；说完这一句本轮就结束。可选对象：" + seatList(a, targets),
+		})
 	}
 	if len(ownClues) > 0 {
 		tools = append(tools, ToolSpec{
@@ -130,6 +143,25 @@ func (a *Actor) speechToolsLocked(seat domain.Seat, ownClues []string) []ToolSpe
 		})
 	}
 	return tools
+}
+
+// whisperReplyTools is the tiny toolset of a private answer: exactly one person
+// to answer, or silence.
+func whisperReplyTools(to domain.Seat) []ToolSpec {
+	return []ToolSpec{
+		{Name: ToolWhisper, Args: fmt.Sprintf(`{"tool":"whisper","to":"%s","text":"只给对方看的话"}`, to.ID), Desc: "只回给私聊你的这个人，其他人看不到。"},
+		{Name: ToolPass, Args: `{"tool":"pass"}`, Desc: "不回应这条私聊。"},
+	}
+}
+
+// seatList names seats as "id（角色名）" so the model can address them without
+// guessing which id belongs to whom.
+func seatList(a *Actor, seats []domain.Seat) string {
+	names := make([]string, 0, len(seats))
+	for _, s := range seats {
+		names = append(names, fmt.Sprintf("%s（%s）", s.ID, a.speakerLocked(s)))
+	}
+	return strings.Join(names, "、")
 }
 
 // thinking publishes the transient "seat is composing" marker that drives the

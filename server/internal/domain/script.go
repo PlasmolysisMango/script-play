@@ -93,6 +93,11 @@ type Phase struct {
 	Order      string `json:"order,omitempty"`
 	SearchMode string `json:"searchMode,omitempty"`
 	TimeoutSec int    `json:"timeoutSec,omitempty"`
+	// RevealOnFind opens a search phase: every card is read aloud the moment
+	// it is picked, so the table gets it without the seat pressing "公开".
+	// Public-search scripts ("本轮调查到的线索均为公开线索") set it; scripts
+	// built on "线索只可转述" leave it false, which is the default everywhere.
+	RevealOnFind bool `json:"revealOnFind,omitempty"`
 }
 
 // Role is a playable character.
@@ -134,12 +139,31 @@ type Clue struct {
 	// reads it while searching, so it names a place ("背后的培养仓") and never
 	// summarises what is there — that is what Content is for, and Content only
 	// becomes visible once the seat owns the clue.
-	Back        string    `json:"back,omitempty"`
-	Content     string    `json:"content"`
-	OwnerRoleID string    `json:"ownerRoleId,omitempty"`
-	IsPublic    bool      `json:"isPublic"`
-	ImageURL    string    `json:"imageUrl,omitempty"`
-	Links       ClueLinks `json:"links,omitempty"`
+	Back        string `json:"back,omitempty"`
+	Content     string `json:"content"`
+	OwnerRoleID string `json:"ownerRoleId,omitempty"`
+	// SubjectRoleID marks a personal search ("搜身线索"): the clue is about
+	// that role, so that role may never draw it. Unlike OwnerRoleID the card
+	// stays in the common pool — everybody else can find it.
+	SubjectRoleID string `json:"subjectRoleId,omitempty"`
+	// MustReveal is the single-card version of RevealOnFind: the card itself
+	// says "本条线索必须公开", so finding it can never stay private no matter
+	// which phase it sits in.
+	MustReveal bool `json:"mustReveal,omitempty"`
+	// GrantsItem is the object a seat takes away when it finds this clue
+	// ("钳子"), and RequiresItems are the objects it must already hold before
+	// it may search this one. Inventory is per seat and never gates speech.
+	GrantsItem    string   `json:"grantsItem,omitempty"`
+	RequiresItems []string `json:"requiresItems,omitempty"`
+	// UnlockedBy lists clues that must be found or revealed first: the
+	// "深入调查" chain, where a card only exists after its parent surfaced.
+	UnlockedBy []string `json:"unlockedBy,omitempty"`
+	// Keywords unlock a private clue (a memory fragment) the first time one
+	// of them is spoken at the table or printed on a revealed clue.
+	Keywords []string  `json:"keywords,omitempty"`
+	IsPublic bool      `json:"isPublic"`
+	ImageURL string    `json:"imageUrl,omitempty"`
+	Links    ClueLinks `json:"links,omitempty"`
 }
 
 // ClueLinks connects a clue to roles, secrets and facts.

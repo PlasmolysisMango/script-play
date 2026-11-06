@@ -16,6 +16,10 @@ server:
 test:
 	cd $(SERVER_DIR) && go vet ./... && go test ./...
 
+## check-scripts: 校验 scripts/ 下所有剧本（与导入时同一套校验）
+check-scripts:
+	cd $(SERVER_DIR) && go run ./cmd/scriptcheck ../scripts/*/script.json
+
 ## run: 本地启动后端（mock provider，8080）
 run:
 	cd $(SERVER_DIR) && SP_LLM_PROVIDER=$${SP_LLM_PROVIDER:-mock} SP_WEB_DIR=$${SP_WEB_DIR:-../web/dist} go run ./cmd/server
@@ -57,4 +61,4 @@ voices:
 fmt:
 	cd $(SERVER_DIR) && gofmt -w ./cmd ./internal
 
-.PHONY: help server test run dev-server web-install web-dev web-check web-build web-publish voices fmt
+.PHONY: help server test check-scripts run dev-server web-install web-dev web-check web-build web-publish voices fmt

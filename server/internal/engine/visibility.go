@@ -37,7 +37,10 @@ type Visible struct {
 	OwnClues    []domain.Clue       `json:"ownClues"`
 	PublicClues []domain.Clue       `json:"publicClues"`
 	OwnFacts    []domain.Fact       `json:"ownFacts"`
-	Transcript  []TranscriptLine    `json:"transcript"`
+	// Items is the seat's inventory (钳子/小铲子…). Public within the seat only:
+	// who holds what is table talk, not server data.
+	Items      []string         `json:"items"`
+	Transcript []TranscriptLine `json:"transcript"`
 	// Recap is the compressed history of everything up to RecapUpto. Both are
 	// prompt-only: the client still receives the full transcript, because a
 	// human can scroll back and an agent cannot.
@@ -92,6 +95,7 @@ func VisibleFor(g *domain.Game, sc *domain.Script, seat *domain.Seat, opt Visibl
 		OwnClues:    []domain.Clue{},
 		PublicClues: []domain.Clue{},
 		OwnFacts:    []domain.Fact{},
+		Items:       []string{},
 		Transcript:  []TranscriptLine{},
 	}
 	if seat != nil {
@@ -144,6 +148,11 @@ func VisibleFor(g *domain.Game, sc *domain.Script, seat *domain.Seat, opt Visibl
 			}
 		}
 	}
+	if seat != nil {
+		if items := g.Items[seat.ID]; len(items) > 0 {
+			v.Items = append(v.Items, items...)
+		}
+	}
 
 	ownSeatID := ""
 	if seat != nil {
@@ -156,6 +165,11 @@ func VisibleFor(g *domain.Game, sc *domain.Script, seat *domain.Seat, opt Visibl
 			v.PublicClues = append(v.PublicClues, c)
 			appendFactLinks(&v, idx, c)
 		case c.OwnerRoleID != "" && seat != nil && c.OwnerRoleID == seat.RoleID:
+			// A keyword-gated fragment stays sealed (even for its owner) until the
+			// table says one of its keywords.
+			if sealedClue(c, st) {
+				continue
+			}
 			v.OwnClues = append(v.OwnClues, c)
 			appendFactLinks(&v, idx, c)
 		case st.Revealed:
@@ -172,7 +186,7 @@ func VisibleFor(g *domain.Game, sc *domain.Script, seat *domain.Seat, opt Visibl
 			continue
 		}
 		switch ev.Type {
-		case domain.EvDM, domain.EvSpeech, domain.EvSystem, domain.EvReveal, domain.EvPhase, domain.EvClueRevealed:
+		case domain.EvDM, domain.EvSpeech, domain.EvWhisper, domain.EvSystem, domain.EvReveal, domain.EvPhase, domain.EvClueRevealed:
 		default:
 			continue
 		}
@@ -235,9 +249,44 @@ func EventVisibleTo(ev domain.Event, seat *domain.Seat) bool {
 			}
 			return strings.TrimPrefix(ev.Visibility, domain.VisSeatPrefix) == seat.ID
 		}
+		if ids, ok := pairIDs(ev.Visibility); ok {
+			if seat == nil {
+				return false
+			}
+			for _, id := range strings.Split(ids, ",") {
+				if id == seat.ID {
+					return true
+				}
+			}
+			return false
+		}
 		return false
 	}
 }
 
 // SeatVisibility builds the visibility string for a private event.
 func SeatVisibility(seatID string) string { return domain.VisSeatPrefix + seatID }
+
+// PairVisibility builds the visibility string for a two-seat line, e.g. a
+// whisper. The seats are sorted so the same pair always yields the same string.
+func PairVisibility(a, b string) string {
+	if b < a {
+		a, b = b, a
+	}
+	return domain.VisPairPrefix + a + "," + b
+}
+
+// pairIDs splits a pair visibility into its raw "<a>,<b>" part.
+func pairIDs(visibility string) (string, bool) {
+	if !strings.HasPrefix(visibility, domain.VisPairPrefix) {
+		return "", false
+	}
+	return strings.TrimPrefix(visibility, domain.VisPairPrefix), true
+}
+
+// sealedClue reports whether a private clue is still waiting for its keyword.
+// Fragments without keywords (a plain private item) are visible to their owner
+// from the start, which is what "你的线索" showed before keywords existed.
+func sealedClue(c domain.Clue, st domain.ClueState) bool {
+	return c.OwnerRoleID != "" && len(c.Keywords) > 0 && !st.Unlocked
+}
