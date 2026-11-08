@@ -356,7 +356,7 @@
 
 **附带修复（跨本）**：非作者通过 `GET /api/scripts/{id}` 读取已发布剧本时，`redact` 原先只抹掉 `truth`、角色私本、线索与 facts，仍会下发 `phases[].dmScript`，其中包括完整复盘与多结局。现已在 `server/internal/httpapi/script_handlers.go` 清空所有阶段的 `dmScript`，并给 `TestNonOwnerCannotSeeTheSolution` 增加断言；对全部已发布剧本生效。
 
-## 附加 / AOFU《持斧奥夫》（2026-11-08，导入待发布）
+## 附加 / AOFU《持斧奥夫》（2026-11-08 导入，2026-11-09 published v1）
 
 | # | 页面 | 规则原文 | 缺的能力 | 落法 |
 | --- | --- | --- | --- | --- |
