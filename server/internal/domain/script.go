@@ -146,6 +146,22 @@ type Phase struct {
 	// cannot be gamed by taking four of the good kind. Clue.Kind is what pairs
 	// a card with a draw.
 	Draws []DrawRule `json:"draws,omitempty"`
+	// AudioURL points at a clip that belongs to the phase — an in-game recording,
+	// a letter read aloud, a sound cue. It is served from the script's committed
+	// assets just like a picture and shown in the phase header.
+	AudioURL   string `json:"audioUrl,omitempty"`
+	AudioLabel string `json:"audioLabel,omitempty"`
+	// LeftoverRoleID is who takes every card still in CluePool when the search
+	// phase closes ("剩下的归旁白"). Without it the leftover cards stay unfound,
+	// which can bury a clue the table was supposed to hold.
+	LeftoverRoleID string `json:"leftoverRoleId,omitempty"`
+	// LeftoverReveal publishes those leftover cards to the table instead of
+	// handing them to the role privately.
+	LeftoverReveal bool `json:"leftoverReveal,omitempty"`
+	// HostExtraPicks is how many extra draw rights the host may hand out in this
+	// phase (the printed acting bonus: 主持人按演技奖励额外搜证). The host spends
+	// one per grant with the search.grant command.
+	HostExtraPicks int `json:"hostExtraPicks,omitempty"`
 	// DrawCost is how many action points one draw spends (K6: 1 根仙骨). It only
 	// means something in a script that sets Meta.StartPoints.
 	DrawCost int `json:"drawCost,omitempty"`

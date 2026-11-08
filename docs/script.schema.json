@@ -241,6 +241,27 @@
           "type": "boolean",
           "description": "搜证公开：本轮抽到的线索立即对全场公开，不必玩家再点「公开」。适用于「本轮调查到的线索均为公开线索」的剧本；默认 false（只可转述）。"
         },
+        "audioUrl": {
+          "type": "string",
+          "description": "本阶段附带的音频（如《奥夫的来信》录音），随剧本放在 scripts/<目录>/ 下并用 /script-assets/… 引用；播放器显示在阶段顶部。"
+        },
+        "audioLabel": {
+          "type": "string",
+          "description": "音频播放器的标题，例如「奥夫的来信（配套音频）」。"
+        },
+        "leftoverRoleId": {
+          "type": "string",
+          "description": "搜证阶段结束时，cluePool 里仍未被抽走的线索归这个角色（「剩下的归旁白」）。需要明确的 cluePool，有主人（ownerRoleId）的卡不参与。"
+        },
+        "leftoverReveal": {
+          "type": "boolean",
+          "description": "把剩余线索直接向全场公开，而不是私下交给 leftoverRoleId。"
+        },
+        "hostExtraPicks": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "主持人本阶段可发放的额外搜证次数（按演技奖励）。每次通过 search.grant 给一名玩家加一次。"
+        },
         "draws": {
           "type": "array",
           "description": "分类抽卡：按顺序从这些卡类里各抽几张，取代 cluePool + perPlayerPick。例：[{\"kind\":\"随身物品\",\"count\":1},{\"kind\":\"轮船线索\",\"count\":3}]。kind 为空表示任意线索。",

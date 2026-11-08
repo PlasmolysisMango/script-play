@@ -1,4 +1,4 @@
-# 全量剧本导入进度（K1–K28）
+# 全量剧本导入进度（K1–K28 + AOFU）
 
 > 本机实测：`raw/` 的 PDF 页数与图片数来自 pypdf / `os.walk`，线上状态读自 `scripts/*/script.json` 与 `server/data/state.json`。
 > 完成口径见 `docs/script-framework-gaps.md` 与导入 SOP（转录 1:1 → check-scripts → 冒烟 → 发布 → 复查）。
@@ -33,13 +33,14 @@
 | K7 | 6 / 107 | 12 | ✅ `K7-星火号` | 10 段 / 55 条 | published v2 | 缺少 |
 | K8 | 8 / 103 | 0 | ✅ `K8-望雀` | 12 段 / 71 条 | published v1 | ✅ |
 | K9 | 10 / 126 | 0 | ✅ `K9-疯人塔` | 12 段 / 74 条 | published v2 | ✅ |
+| AOFU | 10 / 167 | 70 | ✅ `AOFU-持斧奥夫` | 11 段 / 46 条 | 待发布 | ✅ `.tmp-import/AOFU/review.md` |
 
 ## 汇总
 
-- 已转录并发布：**26 / 26** 本（K1、K2、K3、K4、K5、K6、K8、K9、K10、K12、K13、K14、K15、K16、K17、K18、K19、K21、K22、K23、K24、K25、K27、K28，加原有 K7、K11）。
+- 已转录并发布：**26 / 26** 本（K1、K2、K3、K4、K5、K6、K8、K9、K10、K12、K13、K14、K15、K16、K17、K18、K19、K21、K22、K23、K24、K25、K27、K28，加原有 K7、K11）；另导入 AOFU《持斧奥夫》（7 人 / 11 段 / 46 条），待发布。
 - 缺件跳过：**K26**（5 PDF / 110 页，线索与真相目录为空，未生成 `script.json`；详见 `docs/script-framework-gaps.md` 与 `.tmp-import/K26/survey.md`）。
 - 真相缺失跳过：**K20**（12 PDF / 156 页，真相/结局/复盘在外部二维码，目录内无 1:1 可转录真相；详见 `docs/script-framework-gaps.md` 与 `.tmp-import/K20/survey.md`）。
-- 全量计划内剧本已全部处理完毕。
+- 全量计划内剧本已全部处理完毕；AOFU《持斧奥夫》为计划外追加导入。
 
 ## 每本收尾检查
 

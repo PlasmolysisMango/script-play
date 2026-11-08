@@ -170,6 +170,10 @@ export const visibleSchema = z.object({
       .array(z.object({ kind: z.string().optional().default(''), count: z.number().optional().default(0) }))
       .nullish()
       .transform((v) => v ?? []),
+    // A committed clip that belongs to this phase (a letter read aloud, a sound
+    // cue). Served from /script-assets like a clue picture.
+    audioUrl: z.string().optional().default(''),
+    audioLabel: z.string().optional().default(''),
   }),
   phaseIndex: z.number(),
   round: z.number(),
@@ -189,6 +193,8 @@ export const visibleSchema = z.object({
     .nullish()
     .transform((v) => v ?? []),
   seats: z.array(publicSeatSchema).nullish().transform((v) => v ?? []),
+  /** Host only: acting-bonus draws still available this search phase. */
+  hostExtraLeft: z.number().optional().default(0),
 })
 export type Visible = z.infer<typeof visibleSchema>
 
@@ -294,6 +300,8 @@ export const seatStateSchema = z.object({
     .nullish()
     .transform((v) => v ?? undefined),
   status: z.string(),
+  /** The action part of this phase is over and the host has not advanced yet. */
+  phaseDone: z.boolean().optional().default(false),
   voteCount: z.number().optional().default(0),
   votes: z.record(z.number()).nullish().transform((v) => v ?? undefined),
   search: z.array(searchOptionSchema).nullish().transform((v) => v ?? []),

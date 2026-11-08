@@ -30,6 +30,8 @@ type SendCmd = {
   guesses?: Record<string, string>
   /** 技能指向的道友。 */
   targetId?: string
+  /** 主持人命令所属阶段，防止跨阶段误发。 */
+  phaseId?: string
 }
 
 /** Events that change what this seat may see, so the snapshot must be refetched. */
@@ -285,6 +287,13 @@ export function GamePage({ code }: { code: string }) {
 
         <ThinkingBar visible={state.visible} />
 
+        {state.visible.phase.audioUrl ? (
+          <div className="mt-3 rounded-xl border border-line/70 bg-ink/40 px-3 py-2">
+            <p className="mb-2 text-xs text-slate-400">{state.visible.phase.audioLabel || '本阶段音频'}</p>
+            <audio className="w-full" controls preload="metadata" src={state.visible.phase.audioUrl} />
+          </div>
+        ) : null}
+
         <Transcript
           lines={lines}
           selfSeatId={seatId}
@@ -311,6 +320,28 @@ export function GamePage({ code }: { code: string }) {
         {isHost && state.status === 'running' && state.prompt?.kind === 'order' ? (
           <div className="mt-3 border-t border-line/60 pt-3">
             <OrderPanel prompt={state.prompt} send={send} />
+          </div>
+        ) : null}
+
+        {isHost && state.status === 'running' && !state.phaseDone && state.visible.phase.type === 'search' && state.visible.hostExtraLeft > 0 ? (
+          <div className="mt-3 rounded-xl border border-amber-500/40 bg-amber-500/5 p-3">
+            <p className="mb-2 text-xs text-amber-100">
+              额外搜证（演技奖励）：本阶段还剩 {state.visible.hostExtraLeft} 次，点一名玩家给他加一次。
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {state.visible.seats
+                .filter((s) => !s.isHost && s.kind !== 'spectator')
+                .map((s) => (
+                  <button
+                    key={s.id}
+                    type="button"
+                    className="btn-ghost text-xs"
+                    onClick={() => send({ type: 'search.grant', targetId: s.id, phaseId: state.visible.phase.id })}
+                  >
+                    {s.roleName || s.displayName}
+                  </button>
+                ))}
+            </div>
           </div>
         ) : null}
 

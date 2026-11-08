@@ -14,8 +14,9 @@ import (
 	"script-play/internal/domain"
 )
 
-// Pictures live in free text, so both patterns are matched against the whole
-// marshalled script: a field added later is covered without touching this list.
+// Pictures and audio live in free text, so both patterns are matched against
+// the whole marshalled script: a field added later is covered without touching
+// this list.
 var (
 	scriptAssetRef = regexp.MustCompile(`/script-assets/[^)"'\s]+`)
 	legacyStoryRef = regexp.MustCompile(`/story/[^)"'\s]+`)
@@ -56,15 +57,16 @@ func check(path string) error {
 	n, err := checkAssets(path, &s)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "  %v\n", err)
-		return fmt.Errorf("图片检查失败")
+		return fmt.Errorf("素材检查失败")
 	}
-	fmt.Printf("%s ok：%d 角色 / %d 段流程 / %d 条线索 / %d 张配图引用\n", path, len(s.Roles), len(s.Phases), len(s.Clues), n)
+	fmt.Printf("%s ok：%d 角色 / %d 段流程 / %d 条线索 / %d 处素材引用\n", path, len(s.Roles), len(s.Phases), len(s.Clues), n)
 	return nil
 }
 
 // checkAssets resolves every /script-assets/... reference against the pack on
-// disk. A missing picture is a broken page for the player, and a /story/ link
-// is a leftover from the retired global image directory — both fail the gate.
+// disk. A missing picture or audio clip is a broken page for the player, and a
+// /story/ link is a leftover from the retired global image directory — both
+// fail the gate.
 func checkAssets(path string, s *domain.Script) (int, error) {
 	root := filepath.Dir(filepath.Dir(path))
 	blob, err := json.Marshal(s)
@@ -94,7 +96,7 @@ func checkAssets(path string, s *domain.Script) (int, error) {
 		}
 	}
 	if len(missing) > 0 {
-		return 0, fmt.Errorf("配图找不到 %d 处：%s", len(missing), strings.Join(missing, "，"))
+		return 0, fmt.Errorf("素材找不到 %d 处：%s", len(missing), strings.Join(missing, "，"))
 	}
 	return len(seen), nil
 }

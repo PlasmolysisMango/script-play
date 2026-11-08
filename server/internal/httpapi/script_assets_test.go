@@ -85,9 +85,35 @@ func TestScriptAssetRevalidatesInsteadOfLeasingTheOldPicture(t *testing.T) {
 	}
 }
 
-// The directory also holds script.json. Only image extensions are reachable, so
-// the JSON can never be downloaded through the asset route.
-func TestScriptAssetRefusesNonImageFiles(t *testing.T) {
+// A committed script may carry audio as well as pictures; both are served with
+// the type from their extension so a letter can be played in the phase header.
+func TestScriptAssetServesCommittedAudio(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "AOFU-持斧奥夫", "audio")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mp3 := []byte("ID3\x04\x00\x00\x00\x00\x00\x00")
+	if err := os.WriteFile(filepath.Join(dir, "letter.mp3"), mp3, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h := scriptAssetServer(t, root)
+
+	rec := get(t, h, ScriptAssetURL("AOFU-持斧奥夫", "audio/letter.mp3"))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Content-Type"); got != "audio/mpeg" {
+		t.Errorf("content-type = %q", got)
+	}
+	if rec.Body.Len() != len(mp3) {
+		t.Errorf("body = %d bytes, want %d", rec.Body.Len(), len(mp3))
+	}
+}
+
+// The directory also holds script.json. Only image and audio extensions are
+// reachable, so the JSON can never be downloaded through the asset route.
+func TestScriptAssetRefusesNonAssetFiles(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, "K7-星火号")
 	if err := os.MkdirAll(dir, 0o755); err != nil {

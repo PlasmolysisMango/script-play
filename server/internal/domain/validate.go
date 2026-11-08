@@ -300,6 +300,26 @@ func (s *Script) Validate() []ValidationError {
 				add(p+".searchMode", "未知搜证方式：%s（可选 pick / random）", ph.SearchMode)
 			}
 		}
+		if ph.LeftoverRoleID != "" {
+			if ph.Type != PhaseSearch {
+				add(p+".leftoverRoleId", "只有搜证阶段才有剩余线索归属")
+			}
+			if len(ph.CluePool) == 0 {
+				add(p+".leftoverRoleId", "剩卡归属需要一个明确的 cluePool")
+			}
+			if !roleIDs[ph.LeftoverRoleID] {
+				add(p+".leftoverRoleId", "未知角色：%s", ph.LeftoverRoleID)
+			}
+		}
+		if ph.LeftoverReveal && ph.LeftoverRoleID == "" {
+			add(p+".leftoverReveal", "要公开剩余线索，先指定 leftoverRoleId")
+		}
+		if ph.HostExtraPicks < 0 {
+			add(p+".hostExtraPicks", "主持人额外搜证名额不能为负")
+		}
+		if ph.HostExtraPicks > 0 && ph.Type != PhaseSearch {
+			add(p+".hostExtraPicks", "只有搜证阶段才有额外搜证名额")
+		}
 		if ph.Type == PhaseDiscussion && ph.SpeechPerPlayer <= 0 {
 			add(p+".speechPerPlayer", "讨论阶段每人发言次数必须大于 0")
 		}

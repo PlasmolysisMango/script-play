@@ -38,6 +38,16 @@ var imageExts = map[string]string{
 	".gif":  "image/gif",
 }
 
+// audioExts are served from a script's committed assets but never accepted by
+// the upload endpoint: audio is authored with the script and reviewed in git,
+// not pasted into a draft from the studio.
+var audioExts = map[string]string{
+	".mp3": "audio/mpeg",
+	".m4a": "audio/mp4",
+	".ogg": "audio/ogg",
+	".wav": "audio/wav",
+}
+
 func (s *Server) mediaDir(scriptID string) string {
 	return filepath.Join(s.cfg.DataDir, mediaRoot, scriptID)
 }

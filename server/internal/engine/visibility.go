@@ -54,6 +54,9 @@ type Visible struct {
 	CardRoles []PublicRoleCard `json:"cardRoles,omitempty"`
 	// Seats is the public player list (no model ids, no persona numbers).
 	Seats []PublicSeat `json:"seats"`
+	// HostExtraLeft is the acting bonus still available to the host in this
+	// search phase. It is host-only data and stays zero for everyone else.
+	HostExtraLeft int `json:"hostExtraLeft,omitempty"`
 }
 
 // PublicRoleCard is one line of the printed roster of a card game.

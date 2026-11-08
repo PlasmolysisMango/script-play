@@ -15,7 +15,7 @@ import (
 // build. The studio keeps uploading runtime images to data/media instead; those
 // are authored after publishing and belong to the data directory, not the repo.
 //
-//	GET /script-assets/<script dir>/<anything>/<file>.<image ext>
+//	GET /script-assets/<script dir>/<anything>/<file>.<image or audio ext>
 const scriptAssetsPrefix = "/script-assets/"
 
 // ScriptAssetURL is the URL a script body should store for a file committed
@@ -24,10 +24,10 @@ func ScriptAssetURL(dir, rel string) string {
 	return scriptAssetsPrefix + strings.Trim(dir, "/") + "/" + strings.TrimLeft(filepath.ToSlash(rel), "/")
 }
 
-// handleScriptAsset serves one committed picture.
+// handleScriptAsset serves one committed asset.
 //
 // It is read-only and unauthenticated: a clue card has to render for a signed-in
-// player, and these files are public game material anyway. Only image
+// player, and these files are public game material anyway. Only image and audio
 // extensions are reachable, so script.json (and any other text file that ends
 // up in the directory) cannot be read through it.
 func (s *Server) handleScriptAsset(w http.ResponseWriter, r *http.Request) {
@@ -37,7 +37,11 @@ func (s *Server) handleScriptAsset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := filepath.Base(rel)
-	mime, ok := imageExts[strings.ToLower(filepath.Ext(name))]
+	ext := strings.ToLower(filepath.Ext(name))
+	mime, ok := imageExts[ext]
+	if !ok {
+		mime, ok = audioExts[ext]
+	}
 	if !ok {
 		http.NotFound(w, r)
 		return

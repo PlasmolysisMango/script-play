@@ -51,6 +51,9 @@ type ClientMessage struct {
 	Guesses map[string]string `json:"guesses,omitempty"`
 	// TargetID names the seat a skill points at.
 	TargetID string `json:"targetId,omitempty"`
+	// PhaseID pins a host command to the phase it was issued in, so a click that
+	// arrives after the table moved on cannot spend the next round's budget.
+	PhaseID string `json:"phaseId,omitempty"`
 }
 
 // ActorConfig tunes timing.
@@ -150,6 +153,15 @@ type Actor struct {
 	// searchQuota is this round's per-seat draw quota when the script hands them
 	// out by rank (K12 PickByRank). Empty means the flat phase limit applies.
 	searchQuota map[string]int
+	// searchExtra is the acting bonus the host has granted this phase, per seat.
+	// It adds to the printed quota without touching the script.
+	searchExtra map[string]int
+	// hostExtraLeft is how much of Phase.HostExtraPicks the host may still grant.
+	hostExtraLeft int
+	// searchOpen stays true only while the current search loop is still handing
+	// out turns. Once the walk closes, a late grant must not buy a pick nobody
+	// will ever be prompted for.
+	searchOpen bool
 	// pointsOpen flips once a SettleFavor phase has published the balances; until
 	// then Meta.HidePoints keeps other seats' numbers off the table.
 	pointsOpen bool
@@ -369,6 +381,11 @@ func (a *Actor) StateForSeat(seatID string) (SeatState, bool) {
 
 func (a *Actor) stateLocked(seat *domain.Seat, includeTruth bool) SeatState {
 	v := VisibleFor(a.g, a.sc, seat, VisibleOptions{IncludeTruth: includeTruth, MaxTranscript: 200})
+	if seat != nil && seat.IsHost {
+		// Fill the host-only budget before the value is copied into the seat
+		// state; setting it on the local afterwards would never reach the wire.
+		v.HostExtraLeft = a.hostExtraLeft
+	}
 	st := SeatState{
 		Visible:   v,
 		Phases:    a.m.Summary(a.g),
@@ -481,6 +498,13 @@ func (a *Actor) Handle(ctx context.Context, seatID string, msg ClientMessage) er
 		}
 		a.requestAdvance(ctx)
 		return nil
+	case "search.grant":
+		// The printed acting bonus: the host may hand one extra draw to a seat.
+		// It is resolved here because the host never holds a search waiter.
+		if !seat.IsHost {
+			return ErrNotAllowed{Reason: "只有主持人可以发放额外搜证"}
+		}
+		return a.grantSearchPick(*seat, msg.TargetID, msg.PhaseID)
 	case "speak.request":
 		// Ask for the floor in an open discussion instead of typing first.
 		return a.requestFloor(*seat)
@@ -647,6 +671,9 @@ func (a *Actor) beginPhase(ctx context.Context) {
 	a.speech = map[string]int{}
 	a.searched = map[string]int{}
 	a.searchQuota = nil
+	a.searchExtra = map[string]int{}
+	a.hostExtraLeft = ph.HostExtraPicks
+	a.searchOpen = ph.Type == domain.PhaseSearch
 	a.floor = nil
 	a.phaseDone = false
 	a.resetTalkLocked()
@@ -739,6 +766,10 @@ func (a *Actor) advance(ctx context.Context, gen int) {
 		a.mu.Unlock()
 		return
 	}
+	// A search the host cuts short still distributes its leftovers; otherwise a
+	// skipped round would leave cards the printed manual says somebody receives.
+	a.searchOpen = false
+	a.assignLeftoversLocked(a.m.Current(a.g))
 	ph, done := a.m.Advance(a.g)
 	a.phaseGen++
 	a.phaseDone = false
@@ -1113,6 +1144,14 @@ func (a *Actor) runSearch(ctx context.Context, gen int) {
 			a.awaitSearch(ctx, gen, *next, ph)
 		}
 	}
+	a.mu.Lock()
+	if gen == a.phaseGen {
+		// The host may have cut the round while the last seat was finishing. In
+		// that case the next phase already owns searchOpen; do not close it here.
+		a.searchOpen = false
+		a.assignLeftoversLocked(ph)
+	}
+	a.mu.Unlock()
 	a.completePhase(ctx, gen)
 }
 
@@ -1138,20 +1177,159 @@ func (a *Actor) layoutQuotaLocked(ph *domain.Phase) {
 	a.searchQuota = quota
 }
 
+// grantSearchPick spends one of the phase's host extra picks on a seat. The
+// bonus is a table rule, not a script rule: the host decides who earned it, and
+// the seat simply owes one more draw.
+func (a *Actor) grantSearchPick(host domain.Seat, targetID, phaseID string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	ph := a.m.Current(a.g)
+	if ph == nil || ph.Type != domain.PhaseSearch || a.phaseDone || !a.searchOpen {
+		return ErrNotAllowed{Reason: "现在不是搜证阶段"}
+	}
+	if phaseID != "" && phaseID != ph.ID {
+		return ErrNotAllowed{Reason: "阶段已切换"}
+	}
+	if ph.HostExtraPicks <= 0 {
+		return ErrNotAllowed{Reason: "本阶段没有额外搜证名额"}
+	}
+	if a.hostExtraLeft <= 0 {
+		return ErrNotAllowed{Reason: "本阶段的额外搜证名额已经发完"}
+	}
+	target := a.g.SeatByID(targetID)
+	if target == nil || target.Kind == domain.SeatSpectator || target.IsHost {
+		return ErrNotAllowed{Reason: "请选择一名在场玩家"}
+	}
+	if len(ph.OnlyRoleIDs) > 0 && !slices.Contains(ph.OnlyRoleIDs, target.RoleID) {
+		return ErrNotAllowed{Reason: "该角色本阶段不能搜证"}
+	}
+	// The target must already own a turn in this round. Granting to a seat the
+	// printed order skips would spend the budget on a pick nobody can use.
+	inOrder := false
+	for _, s := range a.order {
+		if s.ID == target.ID {
+			inOrder = true
+			break
+		}
+	}
+	if !inOrder {
+		return ErrNotAllowed{Reason: "该玩家不在本阶段搜证顺序里"}
+	}
+	if len(a.availableCluesLocked(*target, ph)) == 0 {
+		return ErrNotAllowed{Reason: "该玩家现在没有可以搜的线索"}
+	}
+	if cost := a.drawCost(ph); cost > 0 && a.g.Points[target.ID] < cost {
+		return ErrNotAllowed{Reason: "该玩家的行动点不够再搜一张"}
+	}
+	a.hostExtraLeft--
+	if a.searchExtra == nil {
+		a.searchExtra = map[string]int{}
+	}
+	a.searchExtra[target.ID]++
+	a.appendLocked(domain.Event{
+		Type:    domain.EvSystem,
+		PhaseID: ph.ID,
+		Text:    fmt.Sprintf("主持人判定 %s 获得额外一次搜证机会", a.speakerLocked(*target)),
+	})
+	a.persistLocked()
+	return nil
+}
+
+// assignLeftoversLocked hands every unclaimed card in a curated search pool to
+// Phase.LeftoverRoleID when the round closes. It runs both when the round ends
+// naturally and when the host cuts it short, so a skipped search cannot swallow
+// a clue the printed manual says the narrator receives.
+func (a *Actor) assignLeftoversLocked(ph *domain.Phase) {
+	if ph == nil || a.m.Current(a.g) != ph || ph.Type != domain.PhaseSearch || ph.LeftoverRoleID == "" || len(ph.CluePool) == 0 {
+		return
+	}
+	var owner *domain.Seat
+	for i := range a.g.Seats {
+		if a.g.Seats[i].RoleID == ph.LeftoverRoleID && a.g.Seats[i].Kind != domain.SeatSpectator {
+			owner = &a.g.Seats[i]
+			break
+		}
+	}
+	now := time.Now().UTC()
+	for _, id := range ph.CluePool {
+		c := a.m.TokenClue(id)
+		if c == nil || c.OwnerRoleID != "" {
+			// 有主人的私人物品不进剩卡堆：把它塞给旁白等于把别人的隐私线索送人。
+			continue
+		}
+		st := a.g.ClueState[id]
+		if st.FoundBySeat != "" || st.Revealed {
+			continue
+		}
+		st.ClueID = id
+		st.FoundAt = now
+		// An underfilled room may not have the printed recipient. The cards are
+		// still game material, so they go to the table instead of disappearing.
+		public := owner == nil || ph.LeftoverReveal || ph.RevealOnFind || c.MustReveal
+		if owner != nil {
+			st.FoundBySeat = owner.ID
+		}
+		if public {
+			st.Revealed = true
+			if owner != nil {
+				st.RevealedBy = owner.ID
+			}
+			st.RevealedAt = now
+		}
+		a.g.ClueState[id] = st
+		if public {
+			forWhat := ""
+			seatID, roleID := "", ""
+			if owner != nil {
+				forWhat = "，归" + a.speakerLocked(*owner)
+				seatID, roleID = owner.ID, owner.RoleID
+			}
+			a.appendLocked(domain.Event{
+				Type:    domain.EvClueRevealed,
+				PhaseID: ph.ID,
+				SeatID:  seatID,
+				RoleID:  roleID,
+				ClueID:  id,
+				Text:    fmt.Sprintf("搜证结束，剩余线索【%s】公开%s：%s", c.Title, forWhat, c.Content),
+				Meta:    map[string]string{"title": c.Title, "content": c.Content},
+			})
+			a.unlockKeywordsLocked(c.Title + " " + c.Content)
+			continue
+		}
+		if c.GrantsItem != "" && a.g.GrantItem(owner.ID, c.GrantsItem) {
+			a.appendLocked(domain.Event{
+				Type:       domain.EvSystem,
+				PhaseID:    ph.ID,
+				SeatID:     owner.ID,
+				Visibility: SeatVisibility(owner.ID),
+				Text:       fmt.Sprintf("剩余线索带来了物品【%s】", c.GrantsItem),
+			})
+		}
+		a.appendLocked(domain.Event{
+			Type:       domain.EvSystem,
+			PhaseID:    ph.ID,
+			SeatID:     owner.ID,
+			ClueID:     id,
+			Visibility: SeatVisibility(owner.ID),
+			Text:       fmt.Sprintf("搜证结束，剩余线索【%s】归你：%s", c.Title, c.Content),
+			Meta:       map[string]string{"clueId": id, "title": c.Title},
+		})
+	}
+	a.persistLocked()
+}
+
 // searchLimitLocked is how many cards one seat owes this round: the rank figure
 // when the script hands them out by favour, otherwise the flat phase limit.
 func (a *Actor) searchLimitLocked(seat domain.Seat, ph *domain.Phase) int {
+	base := 1
 	if q, ok := a.searchQuota[seat.ID]; ok {
-		if q <= 0 {
-			return 1
+		if q > 0 {
+			base = q
 		}
-		return q
+	} else if limit := ph.PickLimit(); limit > 0 {
+		base = limit
 	}
-	limit := ph.PickLimit()
-	if limit <= 0 {
-		limit = 1
-	}
-	return limit
+	return base + a.searchExtra[seat.ID]
 }
 
 // nextSearcherLocked walks the phase order and returns the next seat that may
@@ -1325,7 +1503,7 @@ func (a *Actor) awaitSearch(ctx context.Context, gen int, seat domain.Seat, ph *
 		if cur, ok := a.waiters[seat.ID]; ok && cur == ch {
 			delete(a.waiters, seat.ID)
 		}
-		if a.floor != nil && a.floor.SeatID == seat.ID {
+		if a.floor != nil && a.floor.SeatID == seat.ID && a.floor.PhaseID == ph.ID {
 			a.floor = nil
 		}
 		a.mu.Unlock()
@@ -2162,7 +2340,7 @@ func (a *Actor) agentSearch(seat domain.Seat, ph *domain.Phase) bool {
 		return false
 	}
 	a.mu.Lock()
-	if a.floor != nil && a.floor.SeatID == seat.ID {
+	if a.floor != nil && a.floor.SeatID == seat.ID && a.floor.PhaseID == ph.ID {
 		a.floor = nil
 	}
 	a.mu.Unlock()
@@ -2509,7 +2687,7 @@ func (a *Actor) awaitSpeech(ctx context.Context, gen int, seat domain.Seat, ph *
 		if cur, ok := a.waiters[seat.ID]; ok && cur == ch {
 			delete(a.waiters, seat.ID)
 		}
-		if a.floor != nil && a.floor.SeatID == seat.ID {
+		if a.floor != nil && a.floor.SeatID == seat.ID && a.floor.PhaseID == ph.ID {
 			a.floor = nil
 		}
 		a.mu.Unlock()
