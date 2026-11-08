@@ -13,12 +13,18 @@ export type Role = {
   id?: string
   name?: string
   personaId?: string
+  /** 角色卡上印的字母（A–E），卡牌本用它对齐积分卡。 */
+  letter?: string
+  /** 角色房间所在的楼层（一楼/二楼/三楼），搜证时不能抽自己楼层的卡。 */
+  floor?: string
   public?: { intro?: string; appearance?: string }
   private?: {
     script?: string
     secrets?: Secret[]
     goals?: string[]
     knownFactIds?: string[]
+    /** 角色卡正面印的「你的关键词」，只说一次，不能给旁人看。 */
+    keyword?: string
   }
 }
 
@@ -31,6 +37,10 @@ export type Clue = {
   ownerRoleId?: string
   /** 搜身线索：说的是谁，本人抽不到。 */
   subjectRoleId?: string
+  /** 这张卡所属的楼层；与角色 floor 相同的座位抽不到。 */
+  floor?: string
+  /** 卡面「可以抽取一张额外的线索」：抽到的座位本轮多一次。 */
+  extraDraw?: boolean
   /** 本线索必须公开（卡面写「本条线索必须公开」）。 */
   mustReveal?: boolean
   /** 搜到即获得的物品。 */
@@ -43,8 +53,13 @@ export type Clue = {
   keywords?: string[]
   isPublic?: boolean
   imageUrl?: string
+  /** 卡类（「随身物品」「轮船线索」），阶段按类抽卡时配对用。 */
+  kind?: string
   links?: { roles?: string[]; secrets?: string[]; facts?: string[] }
 }
+
+/** 一段抽卡规则：从某一类线索里抽几张。 */
+export type DrawRule = { kind: string; count: number }
 
 export type Phase = {
   id?: string
@@ -58,8 +73,12 @@ export type Phase = {
   searchMode?: string
   order?: string
   timeoutSec?: number
+  /** 只由这些角色行动（如「查理的记忆」只有黑猫能抽）。 */
+  onlyRoleIds?: string[]
   /** 本轮搜到的线索立即公开。 */
   revealOnFind?: boolean
+  /** 分类抽卡：按顺序从这些卡类里各抽几张，取代 cluePool + perPlayerPick。 */
+  draws?: DrawRule[]
 }
 
 export type Fact = { id?: string; text?: string }
@@ -90,12 +109,48 @@ export type ScriptBody = {
   roles?: Role[]
   clues?: Clue[]
   facts?: Fact[]
+  /** 空 = 角色本剧本；cardgame = 手牌 + 出牌 + 积分卡。 */
+  mode?: string
+  cardGame?: CardGame
 }
+
+/** 一张实体牌。技能牌没有颜色和数字，所以随时能出、可以点任何人。 */
+export type Card = {
+  id?: string
+  kind?: string
+  color?: string
+  number?: number
+  title?: string
+  text?: string
+  /** 印着「此牌最先出」的那一张：抽到的人先出牌。 */
+  first?: boolean
+}
+
+/** 角色面前扣着的两张未知词卡。 */
+export type CardWord = { roleId?: string; word?: string; open?: boolean }
+
+export type CardGame = {
+  /** 每人发几张；0 = 牌堆平均分。 */
+  deal?: number
+  /** 名次分：第一名、第二名…… */
+  points?: number[]
+  /** 凶手排进前几名算赢。 */
+  killerRank?: number
+  cards?: Card[]
+  words?: CardWord[]
+}
+
+export const SCRIPT_MODES = [
+  ['', '角色本（经典）'],
+  ['cardgame', '卡牌本（手牌 + 积分卡）'],
+] as const
 
 export const PHASE_TYPES = [
   ['reading', '阅读剧本'],
   ['opening', '开场'],
   ['search', '搜证'],
+  ['play', '出牌（卡牌本）'],
+  ['score', '填积分卡（卡牌本）'],
   ['discussion', '讨论'],
   ['vote', '投票'],
   ['reveal', '揭晓'],

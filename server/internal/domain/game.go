@@ -168,12 +168,20 @@ type Game struct {
 	// Items is the per-seat inventory: seatID -> item names. Items only gate
 	// which clue a seat may search; they never travel into a prompt as prose.
 	Items map[string][]string `json:"items,omitempty"`
+	// Points is the live action-currency balance per seat (K6's 仙骨). It lives
+	// on the game rather than the actor so a restart keeps the table's bones.
+	Points map[string]int `json:"points,omitempty"`
+	// SkillsUsed records the seats whose one-shot special ability already fired.
+	SkillsUsed map[string]bool `json:"skillsUsed,omitempty"`
 	// Recap is the compressed retelling of everything public up to UptoSeq.
 	// It is what keeps a long argument from crowding the role book out of the
 	// prompt; nil means nothing has been compressed yet.
 	Recap     *Recap     `json:"recap,omitempty"`
 	StartedAt *time.Time `json:"startedAt,omitempty"`
 	EndedAt   *time.Time `json:"endedAt,omitempty"`
+	// Cards is the live card table of a card-game script: hands, pile and the
+	// score sheets. Nil for every classic script.
+	Cards *CardState `json:"cards,omitempty"`
 }
 
 // Recap is a compressed history of the public log, written once per phase.

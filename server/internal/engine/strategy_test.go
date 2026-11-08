@@ -122,7 +122,7 @@ func TestHostAssignedOrderWaitsForHost(t *testing.T) {
 	if err := actor.Handle(ctx, "seat1", ClientMessage{Type: "order.set", SeatIDs: []string{"seat3"}}); err != nil {
 		t.Fatalf("order.set short: %v", err)
 	}
-	waitEvent(t, actor, "seat1", "请把 3 个玩家全部排进顺序里")
+	waitEvent(t, actor, "seat1", "请把 3 个能行动的角色全部排进顺序里")
 
 	// The real layout: reverse of the seating order.
 	if err := actor.Handle(ctx, "seat1", ClientMessage{Type: "order.set", SeatIDs: []string{"seat3", "seat2", "seat1"}}); err != nil {

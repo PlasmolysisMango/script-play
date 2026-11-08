@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { Field, Tag } from '../../components/ui'
 import { MarkdownField } from '../../components/Markdown'
 import {
@@ -18,6 +18,7 @@ import {
   secretIndex,
   splitIds,
   type Clue,
+  type DrawRule,
   type Fact,
   type Phase,
   type Role,
@@ -27,6 +28,62 @@ import {
 } from './draft'
 
 type Opt = { id: string; label: string }
+
+/** 抽卡规则在表单里写成「卡类:张数」，逗号中英文都认，写错的那段直接忽略。 */
+function drawsText(draws?: DrawRule[]): string {
+  return (draws ?? []).map((d) => `${d.kind}:${d.count}`).join(', ')
+}
+
+function parseDraws(text: string): DrawRule[] {
+  const out: DrawRule[] = []
+  for (const part of text.split(/[,，、]/)) {
+    const [kind, count] = part.split(/[:：]/)
+    const n = Number((count ?? '').trim())
+    if (!kind?.trim() || !Number.isFinite(n) || n <= 0) continue
+    out.push({ kind: kind.trim(), count: Math.round(n) })
+  }
+  return out
+}
+
+/**
+ * 「分类抽取」输入框。归本地草稿管，失焦时才把整串解析结果交上去。
+ *
+ * 直接受控于 `phase.draws` 会把每个中间态都当成新值：敲到「华丽探险:」时
+ * `parseDraws` 还抽不出规则，回写的空数组立刻把输入框清掉，于是这个字段只能
+ * 整段粘贴、不能逐字输入。
+ */
+function DrawsField({
+  draws,
+  disabled,
+  onCommit,
+}: {
+  draws?: DrawRule[]
+  disabled: boolean
+  onCommit: (next: DrawRule[]) => void
+}) {
+  const committed = drawsText(draws)
+  const [text, setText] = useState(committed)
+  useEffect(() => setText(committed), [committed])
+  return (
+    <input
+      className="input text-xs"
+      value={text}
+      placeholder="随身物品:1, 轮船线索:3"
+      disabled={disabled}
+      onChange={(e) => {
+        setText(e.target.value)
+        // 已经完整的规则照旧即时生效，半截的那条留到失焦再定。
+        const next = parseDraws(e.target.value)
+        if (next.length) onCommit(next)
+      }}
+      onBlur={() => {
+        const next = parseDraws(text)
+        setText(drawsText(next))
+        onCommit(next)
+      }}
+    />
+  )
+}
 
 export type ScriptEditorProps = {
   draft: ScriptBody
@@ -70,6 +127,7 @@ export function ScriptEditor({ draft, disabled, onChange, onUploadImage }: Scrip
       <PhaseSection
         phases={phases}
         clueOpts={clueOpts}
+        roles={roles}
         disabled={disabled}
         onUploadImage={onUploadImage}
         onChange={(next) => onChange({ ...draft, phases: next })}
@@ -364,12 +422,14 @@ function MetaSection({
 function PhaseSection({
   phases,
   clueOpts,
+  roles,
   disabled,
   onUploadImage,
   onChange,
 }: {
   phases: Phase[]
   clueOpts: Opt[]
+  roles: Role[]
   disabled: boolean
   onUploadImage?: (file: File) => Promise<string | null>
   onChange: (next: Phase[]) => void
@@ -503,6 +563,45 @@ function PhaseSection({
                         value={phase.perPlayerPick ?? 1}
                         disabled={disabled}
                         onChange={(e) => patch(index, { perPlayerPick: Number(e.target.value) || 1 })}
+                      />
+                    </Field>
+                    <Field label="限定角色" hint="只让这些角色占回合，如「查理的记忆」只由黑猫抽取；留空 = 全场轮转">
+                      <div className="flex flex-wrap gap-2">
+                        {roles.map((r) => {
+                          const on = (phase.onlyRoleIds ?? []).includes(r.id ?? '')
+                          return (
+                            <label
+                              key={r.id}
+                              className="flex items-center gap-1 rounded-md border border-line/60 px-2 py-1 text-xs text-slate-300"
+                            >
+                              <input
+                                type="checkbox"
+                                className="h-3.5 w-3.5 accent-[rgb(var(--accent))]"
+                                checked={on}
+                                disabled={disabled}
+                                onChange={(e) => {
+                                  const cur = phase.onlyRoleIds ?? []
+                                  patch(index, {
+                                    onlyRoleIds: e.target.checked
+                                      ? [...cur, r.id ?? ''].filter(Boolean)
+                                      : cur.filter((id) => id !== r.id),
+                                  })
+                                }}
+                              />
+                              {r.name}
+                            </label>
+                          )
+                        })}
+                      </div>
+                    </Field>
+                    <Field
+                      label="分类抽取"
+                      hint="留空 = 从线索池自由抽；填写后按顺序按类抽，如 随身物品:1、轮船线索:3"
+                    >
+                      <DrawsField
+                        draws={phase.draws}
+                        disabled={disabled}
+                        onCommit={(draws) => patch(index, { draws })}
                       />
                     </Field>
                     <div className="flex items-end pb-1">
@@ -650,6 +749,15 @@ function RoleSection({
                     value={role.personaId ?? ''}
                     disabled={disabled}
                     onChange={(e) => patch(index, { personaId: e.target.value })}
+                  />
+                </Field>
+                <Field label="楼层" hint="「不能抽自己楼层」靠它配对，不分区就留空">
+                  <input
+                    className="input text-xs"
+                    value={role.floor ?? ''}
+                    placeholder="如 二楼"
+                    disabled={disabled}
+                    onChange={(e) => patch(index, { floor: e.target.value })}
                   />
                 </Field>
                 <Field label="公开人设">
@@ -872,6 +980,15 @@ function ClueSection({
                 <Field label="地点">
                   <input className="input text-xs" value={clue.location ?? ''} disabled={disabled} onChange={(e) => patch(index, { location: e.target.value })} />
                 </Field>
+                <Field label="楼层" hint="与角色楼层相同的座位抽不到它">
+                  <input
+                    className="input text-xs"
+                    value={clue.floor ?? ''}
+                    placeholder="如 二楼"
+                    disabled={disabled}
+                    onChange={(e) => patch(index, { floor: e.target.value })}
+                  />
+                </Field>
                 <Field label="卡背" hint="搜证选项上露出的那一行，如「船长 07」">
                   <input className="input text-xs" value={clue.back ?? ''} disabled={disabled} onChange={(e) => patch(index, { back: e.target.value })} />
                 </Field>
@@ -914,6 +1031,26 @@ function ClueSection({
                     搜到必须公开
                   </label>
                 </div>
+                <div className="flex items-end pb-1">
+                  <label className="flex items-center gap-2 text-xs text-slate-300">
+                    <input
+                      type="checkbox"
+                      className="h-4 w-4 accent-[rgb(var(--accent))]"
+                      checked={!!clue.extraDraw}
+                      disabled={disabled}
+                      onChange={(e) => patch(index, { extraDraw: e.target.checked })}
+                    />
+                    可以再抽一张
+                  </label>
+                </div>
+                <Field label="卡类" hint="「随身物品」「轮船线索」这类卡面分类，阶段分类抽卡时靠它配对">
+                  <input
+                    className="input text-xs"
+                    value={clue.kind ?? ''}
+                    disabled={disabled}
+                    onChange={(e) => patch(index, { kind: e.target.value })}
+                  />
+                </Field>
                 <Field label="搜身角色" hint="这条线索说的是谁：本人抽不到，别人照常可搜">
                   <select
                     className="input text-xs"

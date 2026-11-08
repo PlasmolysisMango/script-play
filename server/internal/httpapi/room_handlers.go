@@ -95,7 +95,11 @@ func (s *Server) roomView(room *domain.Room, g *domain.Game, rec *domain.ScriptR
 	for i := range v.Roles {
 		v.Roles[i].Taken = taken[v.Roles[i].ID]
 	}
+	// 卡牌本翻真相前，谁是谁就是积分卡的答案：房间页的座位列表也得跟着藏，
+	// 留着自己的那份方便看本。
+	hidden := g != nil && rec != nil && rec.Body != nil && engine.HiddenIdentities(g, rec.Body)
 	for _, seat := range g.Seats {
+		mine := seat.UserID != "" && seat.UserID == userID
 		sv := seatView{
 			ID:          seat.ID,
 			RoleID:      seat.RoleID,
@@ -105,13 +109,15 @@ func (s *Server) roomView(room *domain.Room, g *domain.Game, rec *domain.ScriptR
 			IsHost:      seat.IsHost,
 			Connected:   seat.Connected,
 			Ready:       seat.Ready,
-			Mine:        seat.UserID != "" && seat.UserID == userID,
+			Mine:        mine,
 		}
 		if seat.UserID == userID {
 			sv.ModelID = seat.ModelID
 			v.MySeatID = seat.ID
 		}
-		if r := findRole(rec, seat.RoleID); r != nil {
+		if hidden && !mine {
+			sv.RoleID = ""
+		} else if r := findRole(rec, seat.RoleID); r != nil {
 			sv.RoleName = r.Name
 		}
 		v.Seats = append(v.Seats, sv)

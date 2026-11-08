@@ -59,6 +59,32 @@ func TestScriptAssetServesCommittedImage(t *testing.T) {
 	}
 }
 
+// A re-cropped map keeps its URL, so a player who already loaded the old
+// picture must not keep seeing it: the response revalidates every time instead
+// of parking the bytes for an hour. The version query a script body may carry
+// (`?v=2`) is ignored by the route.
+func TestScriptAssetRevalidatesInsteadOfLeasingTheOldPicture(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "K1-游轮迷影", "images")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	png := tinyPNG(t)
+	if err := os.WriteFile(filepath.Join(dir, "deck-plan.png"), png, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h := scriptAssetServer(t, root)
+
+	url := ScriptAssetURL("K1-游轮迷影", "images/deck-plan.png")
+	rec := get(t, h, url)
+	if cc := rec.Header().Get("Cache-Control"); cc != "no-cache" {
+		t.Fatalf("Cache-Control = %q, want no-cache", cc)
+	}
+	if rec := get(t, h, url+"?v=2"); rec.Code != http.StatusOK || rec.Body.Len() != len(png) {
+		t.Fatalf("versioned url = %d (%d bytes)", rec.Code, rec.Body.Len())
+	}
+}
+
 // The directory also holds script.json. Only image extensions are reachable, so
 // the JSON can never be downloaded through the asset route.
 func TestScriptAssetRefusesNonImageFiles(t *testing.T) {

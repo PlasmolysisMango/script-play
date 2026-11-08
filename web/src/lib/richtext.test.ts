@@ -41,6 +41,12 @@ describe('parseRichText', () => {
     expect(blocks[0].kind === 'time' && blocks[0].parts[0].text).toBe('你们像往常一样聚在餐厅吃晚饭。')
   })
 
+  it('keeps the period of day inside the stamp', () => {
+    const blocks = parseRichText('**早上 10：00** 你去敲斯星眠的门。')
+    expect(blocks[0].kind).toBe('time')
+    expect(blocks[0].kind === 'time' && blocks[0].time).toBe('早上 10:00')
+  })
+
   it('keeps a bolded sentence out of the timeline', () => {
     const blocks = parseRichText('**你们像往常一样聚在餐厅吃晚饭**。')
     expect(blocks[0].kind).toBe('p')
@@ -83,6 +89,21 @@ describe('markdown blocks', () => {
   it('does not confuse a rule with a bullet', () => {
     expect(parseRichText('---')[0].kind).toBe('rule')
     expect(parseRichText('- 甲')[0].kind).toBe('ul')
+  })
+
+  it('reads a printed profile grid as a table', () => {
+    const blocks = parseRichText(
+      ['| 性别 | 年龄 | 身高 | 体重 |', '| --- | --- | --- | --- |', '| 男 | 50 岁左右 | 177cm | 65kg |'].join('\n'),
+    )
+    expect(blocks.map((b) => b.kind)).toEqual(['table'])
+    const table = blocks[0]
+    expect(table.kind === 'table' && table.head.map((c) => c[0].text)).toEqual(['性别', '年龄', '身高', '体重'])
+    expect(table.kind === 'table' && table.rows[0].map((c) => c[0].text)).toEqual(['男', '50 岁左右', '177cm', '65kg'])
+  })
+
+  it('keeps a pipe line literal when no rule follows it', () => {
+    const blocks = parseRichText('| 不是表格的一行 |')
+    expect(blocks.map((b) => b.kind)).toEqual(['p'])
   })
 })
 

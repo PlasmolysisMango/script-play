@@ -309,7 +309,27 @@ export function StudioPage() {
           items={materials.data?.materials ?? []}
           loading={materials.isLoading}
           busy={upload.isPending}
-          onUpload={(files) => upload.mutate(files)}
+          maxMB={materials.data?.maxUploadMB ?? 0}
+          onUpload={(files) => {
+            // Check before the bytes leave the browser: a 68 MB bundle takes a
+            // while to send, and finding out afterwards through a bare 413 is
+            // both slow and unhelpful. The server caps one request at twice the
+            // per-file limit, so the total is checked too.
+            const maxMB = materials.data?.maxUploadMB ?? 0
+            if (maxMB > 0) {
+              const tooBig = files.find((f) => f.size > maxMB * 1024 * 1024)
+              if (tooBig) {
+                notify(`${tooBig.name} 超过 ${maxMB} MB 上限，请压缩或拆分后再传`, 'error')
+                return
+              }
+              const totalMB = files.reduce((n, f) => n + f.size, 0) / 1024 / 1024
+              if (totalMB > maxMB * 2) {
+                notify(`一次最多上传 ${maxMB * 2} MB，请分批上传`, 'error')
+                return
+              }
+            }
+            upload.mutate(files)
+          }}
           onDelete={(m) => removeMaterial.mutate(m.id)}
         />
       </aside>
@@ -475,6 +495,7 @@ function MaterialPanel({
   items,
   loading,
   busy,
+  maxMB,
   onUpload,
   onDelete,
 }: {
@@ -482,6 +503,7 @@ function MaterialPanel({
   items: RawMaterial[]
   loading: boolean
   busy: boolean
+  maxMB: number
   onUpload: (files: File[]) => void
   onDelete: (m: RawMaterial) => void
 }) {
@@ -493,6 +515,7 @@ function MaterialPanel({
         上传剧本压缩包、docx、pdf 或照片，原样存到服务端收件目录：
         {dir ? <code className="ml-1 break-all font-mono text-[11px] text-slate-400">{dir}</code> : ' data/inbox'}
         。服务端只归档，不解析也不解包。
+        {maxMB > 0 ? `单个文件 ≤ ${maxMB} MB，一次最多 ${maxMB * 2} MB。` : null}
       </p>
       <input
         type="file"

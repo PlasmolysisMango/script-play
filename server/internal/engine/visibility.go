@@ -48,8 +48,20 @@ type Visible struct {
 	RecapUpto int    `json:"-"`
 	// Truth is only populated for human-facing views during the reveal phase.
 	Truth *domain.Truth `json:"truth,omitempty"`
+	// CardRoles is the printed roster of a card game (A 谈资源 / B 余八卦 …).
+	// The box lid lists every character, so the names are public; the seat that
+	// holds one stays secret until the reveal.
+	CardRoles []PublicRoleCard `json:"cardRoles,omitempty"`
 	// Seats is the public player list (no model ids, no persona numbers).
 	Seats []PublicSeat `json:"seats"`
+}
+
+// PublicRoleCard is one line of the printed roster of a card game.
+type PublicRoleCard struct {
+	ID     string `json:"id"`
+	Letter string `json:"letter,omitempty"`
+	Name   string `json:"name"`
+	Intro  string `json:"intro,omitempty"`
 }
 
 // PublicSeat is the safe projection of a seat.
@@ -62,6 +74,21 @@ type PublicSeat struct {
 	IsHost      bool   `json:"isHost"`
 	Connected   bool   `json:"connected"`
 	Ready       bool   `json:"ready"`
+}
+
+// HiddenIdentities reports whether seat↔role assignments must stay secret.
+//
+// A card game hands every player one printed role face down and then pays
+// points for naming everybody else's, so the public seat list may only carry a
+// display name from the deal until the reveal phase opens the box.
+func HiddenIdentities(g *domain.Game, sc *domain.Script) bool {
+	if sc.Mode != domain.ModeCardGame || g.Status == domain.RoomFinished {
+		return false
+	}
+	if g.PhaseIndex >= 0 && g.PhaseIndex < len(sc.Phases) {
+		return sc.Phases[g.PhaseIndex].Type != domain.PhaseReveal
+	}
+	return true
 }
 
 // VisibleOptions tunes what the caller needs.
@@ -84,6 +111,7 @@ type VisibleOptions struct {
 //   - seat configuration (persona numbers, model ids) never.
 func VisibleFor(g *domain.Game, sc *domain.Script, seat *domain.Seat, opt VisibleOptions) Visible {
 	idx := sc.Tokenize()
+	hidden := HiddenIdentities(g, sc)
 	v := Visible{
 		GameID:      g.ID,
 		RoomID:      g.RoomID,
@@ -120,6 +148,11 @@ func VisibleFor(g *domain.Game, sc *domain.Script, seat *domain.Seat, opt Visibl
 	for _, r := range sc.Roles {
 		v.PublicRoles = append(v.PublicRoles, r.Public)
 	}
+	if sc.Mode == domain.ModeCardGame {
+		for _, r := range sc.Roles {
+			v.CardRoles = append(v.CardRoles, PublicRoleCard{ID: r.ID, Letter: r.Letter, Name: r.Name, Intro: r.Public.Intro})
+		}
+	}
 	for _, s := range g.Seats {
 		ps := PublicSeat{
 			ID:          s.ID,
@@ -130,8 +163,13 @@ func VisibleFor(g *domain.Game, sc *domain.Script, seat *domain.Seat, opt Visibl
 			Connected:   s.Connected,
 			Ready:       s.Ready,
 		}
-		if r := idx.RoleByID(s.RoleID); r != nil {
+		if r := idx.RoleByID(s.RoleID); r != nil && (!hidden || (seat != nil && seat.ID == s.ID)) {
 			ps.RoleName = r.Name
+		}
+		// In a card game the assignment itself is the secret: a seat list that
+		// carries roleId would answer the score sheet for free.
+		if hidden && (seat == nil || seat.ID != s.ID) {
+			ps.RoleID = ""
 		}
 		v.Seats = append(v.Seats, ps)
 	}
@@ -190,11 +228,17 @@ func VisibleFor(g *domain.Game, sc *domain.Script, seat *domain.Seat, opt Visibl
 		default:
 			continue
 		}
+		// 卡牌本里 roleId 就是积分卡的答案：真相翻开前，连自己的发言行也
+		// 不带它——speaker 已经写着座位名 / 角色名，前端不需要再猜。
+		lineRole := ev.RoleID
+		if hidden {
+			lineRole = ""
+		}
 		v.Transcript = append(v.Transcript, TranscriptLine{
 			Seq:     ev.Seq,
 			Kind:    ev.Type,
 			SeatID:  ev.SeatID,
-			RoleID:  ev.RoleID,
+			RoleID:  lineRole,
 			Speaker: ev.Speaker,
 			Text:    ev.Text,
 			At:      ev.At,

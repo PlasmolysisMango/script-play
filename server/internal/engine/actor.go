@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/rand"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -39,6 +40,17 @@ type ClientMessage struct {
 	ReplyTo string `json:"replyTo,omitempty"`
 	// To is the seat a whisper is addressed to.
 	To string `json:"to,omitempty"`
+	// CardID names the card a card-game command plays, gives away or picks.
+	CardID string `json:"cardId,omitempty"`
+	// CardIDs carries the two discarded cards of 陷入僵局.
+	CardIDs []string `json:"cardIds,omitempty"`
+	// Color is the colour 线索中断 names for the next seat.
+	Color string `json:"color,omitempty"`
+	// Guesses maps seatID -> roleID: the "在座玩家分别是谁" lines of the
+	// printed score card.
+	Guesses map[string]string `json:"guesses,omitempty"`
+	// TargetID names the seat a skill points at.
+	TargetID string `json:"targetId,omitempty"`
 }
 
 // ActorConfig tunes timing.
@@ -135,6 +147,12 @@ type Actor struct {
 	// host_assigned leaves both empty until the host lays the round out.
 	order    []domain.Seat
 	orderPos int
+	// searchQuota is this round's per-seat draw quota when the script hands them
+	// out by rank (K12 PickByRank). Empty means the flat phase limit applies.
+	searchQuota map[string]int
+	// pointsOpen flips once a SettleFavor phase has published the balances; until
+	// then Meta.HidePoints keeps other seats' numbers off the table.
+	pointsOpen bool
 	// awaitingOrder is true while the table waits for that layout, so the host
 	// view can show the re-ordering panel instead of an idle table.
 	awaitingOrder bool
@@ -225,6 +243,16 @@ func (a *Actor) Start(ctx context.Context) {
 	a.started = true
 	a.base = ctx
 	a.g.Status = domain.RoomRunning
+	if a.hasPointPoolLocked() && len(a.g.Points) == 0 {
+		// Every player seat starts with the printed pile of bones. Spectators never
+		// hold any: they are not in the round.
+		a.g.Points = map[string]int{}
+		for _, s := range a.g.Seats {
+			if s.Kind != domain.SeatSpectator {
+				a.g.Points[s.ID] = a.startPointsLocked(s)
+			}
+		}
+	}
 	now := time.Now().UTC()
 	a.g.StartedAt = &now
 	a.persistLocked()
@@ -243,6 +271,9 @@ func (a *Actor) Start(ctx context.Context) {
 type SearchOption struct {
 	ID   string `json:"id"`
 	Hint string `json:"hint"`
+	// Granted marks a 「可获得曲径通幽 N」 card: it is not in the round's deck,
+	// it waits for the seat that found the card naming it (clue.grantsClue).
+	Granted bool `json:"granted,omitempty"`
 }
 
 // SeatState is what one connection is allowed to see.
@@ -273,6 +304,37 @@ type SeatState struct {
 	// Prompt is the one thing the table is blocked on right now. Only the host
 	// ever receives one.
 	Prompt *TurnPrompt `json:"prompt,omitempty"`
+	// Hand is this seat's cards in a card-game script (empty elsewhere).
+	Hand []CardView `json:"hand,omitempty"`
+	// Table is the public half of the card table plus this seat's legal moves.
+	Table *TableView `json:"table,omitempty"`
+	// ScoreDone tells the score phase this seat already filled its sheet.
+	ScoreDone bool `json:"scoreDone,omitempty"`
+	// Points is this seat's remaining action currency (K6: 仙骨) and PointsLabel
+	// names it; both stay empty in scripts without one.
+	Points      int    `json:"points,omitempty"`
+	PointsLabel string `json:"pointsLabel,omitempty"`
+	// TablePoints is every player seat's balance. The physical game keeps the
+	// bones face up, so spending is public information.
+	TablePoints map[string]int `json:"tablePoints,omitempty"`
+	// Skill is this seat's printed special ability and whether it may fire now.
+	Skill *SkillView `json:"skill,omitempty"`
+}
+
+// SkillView is the seat's own read of its one-shot ability.
+type SkillView struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Text      string `json:"text"`
+	Cost      int    `json:"cost,omitempty"`
+	AllCost   bool   `json:"allCost,omitempty"`
+	ExactCost int    `json:"exactCost,omitempty"`
+	Target    string `json:"target,omitempty"`
+	Used      bool   `json:"used"`
+	// Ready is true only when this seat could fire it right now; Why says what is
+	// missing when it cannot.
+	Ready bool   `json:"ready"`
+	Why   string `json:"why,omitempty"`
 }
 
 // TurnOption is one player the host may place into the running order.
@@ -324,11 +386,40 @@ func (a *Actor) stateLocked(seat *domain.Seat, includeTruth bool) SeatState {
 	st.VoteCount = len(a.g.Votes)
 	if seat != nil && seat.Kind != domain.SeatSpectator {
 		if ph := a.m.Current(a.g); ph != nil && ph.Type == domain.PhaseSearch {
-			if ph.SearchMode == domain.SearchRandom {
-				st.Draw = remainingPicks(a.searched[seat.ID], ph.PerPlayerPick)
-			} else {
-				st.Search = a.searchOptionsLocked(*seat, ph)
+			allowed := len(ph.OnlyRoleIDs) == 0 || slices.Contains(ph.OnlyRoleIDs, seat.RoleID)
+			if allowed {
+				// 深入调查的那一张不占本轮次数：哪怕 2/4/6 张已经抽完，只要底卡在手、
+				// 物品齐备，它就得一直出现在面板上，否则玩家抽到底卡后再也找不到入口。
+				st.Search = append(st.Search, a.grantedOptionsLocked(*seat, ph)...)
+				left := a.picksLeftLocked(*seat, ph)
+				switch {
+				case left <= 0:
+					// 次数用完：不再给本轮抽取，只剩上面那几张点名的卡。
+				case ph.SearchMode == domain.SearchRandom:
+					st.Draw = left
+				default:
+					st.Search = append(a.searchOptionsLocked(*seat, ph), st.Search...)
+				}
 			}
+		}
+	}
+	if a.hasPointPoolLocked() {
+		st.PointsLabel = a.pointsLabel()
+		st.TablePoints = map[string]int{}
+		open := !a.sc.Meta.HidePoints || a.pointsOpen
+		for _, s := range a.g.Seats {
+			if s.Kind == domain.SeatSpectator {
+				continue
+			}
+			// 未公布时只给本人（主持人另走 includeTruth 的全量视图）。
+			if !open && (seat == nil || s.ID != seat.ID) {
+				continue
+			}
+			st.TablePoints[s.ID] = a.g.Points[s.ID]
+		}
+		if seat != nil && seat.Kind != domain.SeatSpectator {
+			st.Points = a.g.Points[seat.ID]
+			st.Skill = a.skillViewLocked(*seat)
 		}
 	}
 	for _, s := range a.order {
@@ -340,6 +431,13 @@ func (a *Actor) stateLocked(seat *domain.Seat, includeTruth bool) SeatState {
 	}
 	if a.awaitingOrder && seat != nil && seat.IsHost {
 		st.Prompt = a.orderPromptLocked()
+	}
+	if a.g.Cards != nil && len(a.g.Cards.Order) > 0 {
+		st.Table = a.tableViewLocked(seat)
+		if seat != nil && seat.Kind != domain.SeatSpectator {
+			st.Hand = a.handViewsLocked(seat.ID)
+			_, st.ScoreDone = a.g.Cards.Answers[seat.ID]
+		}
 	}
 	return st
 }
@@ -391,6 +489,10 @@ func (a *Actor) Handle(ctx context.Context, seatID string, msg ClientMessage) er
 		// seat owes a prompt (it may even hold the floor), and it must never be
 		// swallowed by a phase's wait channel.
 		return a.sendWhisper(*seat, msg.To, msg.Text)
+	case "skill.use":
+		// A skill may fire at any point of a search round, including while this seat
+		// holds the floor, so it is resolved here rather than inside one waiter.
+		return a.useSkill(*seat, msg.TargetID)
 	}
 
 	if waitCh != nil {
@@ -420,8 +522,28 @@ func (a *Actor) Handle(ctx context.Context, seatID string, msg ClientMessage) er
 		// Declining without holding the floor is a no-op: the seat simply has
 		// nothing queued, and an error frame here would be noise.
 		return nil
+	case "search.pass":
+		return ErrNotAllowed{Reason: "轮到你搜证时才能结束本轮"}
+	case "search.clue":
+		// A 「可获得曲径通幽 N」 card is a bonus on the parent clue: it does not
+		// consume a pick and must stay claimable after this seat's turns are over,
+		// because the item it needs often surfaces later in the same round.
+		a.mu.Lock()
+		claim := phase != nil && phase.Type == domain.PhaseSearch && a.grantedClaimableLocked(*seat, msg.ClueID)
+		a.mu.Unlock()
+		if !claim {
+			return ErrNotAllowed{Reason: "轮到你搜证时才能取线索"}
+		}
+		return a.claimClue(*seat, msg.ClueID, phase)
 	case "clue.reveal":
 		return a.revealClue(*seat, msg.ClueID)
+	case "card.play", "card.random", "card.pass", "card.stall", "card.give":
+		// The cards are handled by the play waiter; reaching here means this
+		// seat is not on the floor. Route it anyway so the error says why.
+		_, err := a.handleCardCommand(*seat, msg)
+		return err
+	case "score.submit":
+		return ErrNotAllowed{Reason: "现在不是填积分卡的时候"}
 	default:
 		return ErrNotAllowed{Reason: "当前阶段不接受该操作"}
 	}
@@ -487,6 +609,21 @@ func (a *Actor) holdTalk(seat domain.Seat, text, replyTo string) bool {
 // The waiters used to drop anything but their own command, so revealing a clue
 // on your search turn looked like a dead button on the client.
 func (a *Actor) sideCommand(seat domain.Seat, msg ClientMessage) bool {
+	if msg.Type == "search.clue" {
+		// 「可获得曲径通幽 N」是印在底卡上的附赠，不占本轮次数，所以它不必
+		// 挤在本人的搜证回合里：物品可能要到别人抽完牌才凑齐。
+		a.mu.Lock()
+		ph := a.m.Current(a.g)
+		claim := ph != nil && ph.Type == domain.PhaseSearch && a.grantedClaimableLocked(seat, msg.ClueID)
+		a.mu.Unlock()
+		if !claim {
+			return false
+		}
+		if err := a.claimClue(seat, msg.ClueID, ph); err != nil {
+			a.notify(seat, err.Error())
+		}
+		return true
+	}
 	if msg.Type != "clue.reveal" {
 		return false
 	}
@@ -509,9 +646,15 @@ func (a *Actor) beginPhase(ctx context.Context) {
 	gen := a.phaseGen
 	a.speech = map[string]int{}
 	a.searched = map[string]int{}
+	a.searchQuota = nil
 	a.floor = nil
 	a.phaseDone = false
 	a.resetTalkLocked()
+	if ph.Type == domain.PhaseVote {
+		// 每个投票阶段是独立的一轮：不清掉上一轮，主持人的计票面板会带着
+		// 旧票数开场，看起来像这一轮已经投完了。
+		a.g.Votes = map[string]string{}
+	}
 	// Just the name: the host's "进入下一阶段：…" line right above already
 	// says what happened, so the divider only has to mark where.
 	a.appendLocked(domain.Event{
@@ -522,6 +665,12 @@ func (a *Actor) beginPhase(ctx context.Context) {
 	})
 	if strings.TrimSpace(ph.DMScript) != "" {
 		a.appendLocked(domain.Event{Type: domain.EvDM, Speaker: "主持人", PhaseID: ph.ID, Text: ph.DMScript})
+	}
+	// 「××专属线索」不等搜证：进入阶段就交到主人手里，牌堆里根本没有它。
+	a.dealPrivateCluesLocked(ph)
+	// 恩宠结算段（K12「水落石出」）：先把分数摆到桌面，再算废后与冷宫。
+	if ph.SettleFavor {
+		a.settleFavorLocked(ph)
 	}
 	a.persistLocked()
 	a.mu.Unlock()
@@ -535,6 +684,10 @@ func (a *Actor) beginPhase(ctx context.Context) {
 		// Nothing to collect: everyone reads the role book (reading) or the host
 		// sets the scene (opening), then the host releases the phase.
 		go a.completePhase(ctx, gen)
+	case domain.PhasePlay:
+		go a.runPlay(ctx, gen)
+	case domain.PhaseScore:
+		go a.runScore(ctx, gen)
 	case domain.PhaseSearch:
 		go a.runSearch(ctx, gen)
 	case domain.PhaseDiscussion:
@@ -660,17 +813,58 @@ func (a *Actor) prepareOrder(ctx context.Context, gen int, ph *domain.Phase) boo
 	a.orderPos = 0
 	a.awaitingOrder = false
 	seats := NewScheduler(a.g.Seats).Order()
+	if len(ph.OnlyRoleIDs) > 0 {
+		// A phase dealt to a subset keeps the seating order but drops everyone
+		// else, so the table is not walked through empty turns.
+		only := make([]domain.Seat, 0, len(ph.OnlyRoleIDs))
+		for _, s := range seats {
+			if slices.Contains(ph.OnlyRoleIDs, s.RoleID) {
+				only = append(only, s)
+			}
+		}
+		seats = only
+	}
 	a.mu.Unlock()
 
 	switch ph.Order {
 	case domain.OrderHostAssigned:
 		return a.awaitOrder(ctx, gen, ph)
+	case domain.OrderFixed:
+		// 剧本把顺序印死了（K6 三轮搜证各一行名字），直接照着排，不需要主持人
+		// 重新摆一遍。
+		a.mu.Lock()
+		fixed := make([]domain.Seat, 0, len(ph.OrderRoleIDs))
+		for _, rid := range ph.OrderRoleIDs {
+			for _, s := range seats {
+				if s.RoleID == rid {
+					fixed = append(fixed, s)
+					break
+				}
+			}
+		}
+		a.order = fixed
+		a.appendLocked(domain.Event{Type: domain.EvSystem, PhaseID: ph.ID, Text: "本阶段顺序（照剧本）：" + a.orderNamesLocked(fixed)})
+		a.persistLocked()
+		a.mu.Unlock()
+		return true
 	case domain.OrderRandom:
 		shuffled := append([]domain.Seat(nil), seats...)
 		rand.Shuffle(len(shuffled), func(i, j int) { shuffled[i], shuffled[j] = shuffled[j], shuffled[i] })
 		a.mu.Lock()
 		a.order = shuffled
 		a.appendLocked(domain.Event{Type: domain.EvSystem, PhaseID: ph.ID, Text: "本阶段顺序（随机）：" + a.orderNamesLocked(shuffled)})
+		a.persistLocked()
+		a.mu.Unlock()
+		return true
+	case domain.OrderFavor:
+		// 恩宠值高的先走（K12 搜证顺序）。同分时保持座位序，重放才读得一致。
+		ranked := append([]domain.Seat(nil), seats...)
+		a.mu.Lock()
+		sort.SliceStable(ranked, func(i, j int) bool {
+			return a.g.Points[ranked[i].ID] > a.g.Points[ranked[j].ID]
+		})
+		a.order = ranked
+		a.appendLocked(domain.Event{Type: domain.EvSystem, PhaseID: ph.ID, Text: "本阶段顺序（按恩宠值）：" + a.orderNamesLocked(ranked)})
 		a.persistLocked()
 		a.mu.Unlock()
 		return true
@@ -695,6 +889,17 @@ func (a *Actor) awaitOrder(ctx context.Context, gen int, ph *domain.Phase) bool 
 		// A room without a host seat has nobody to order the round: fall back to
 		// seating order rather than stalling forever.
 		a.order = NewScheduler(a.g.Seats).Order()
+		if len(ph.OnlyRoleIDs) > 0 {
+			// The phase only deals to a subset (K5's three search rounds are for
+			// the five wizards), so the fallback keeps that subset too.
+			only := make([]domain.Seat, 0, len(a.order))
+			for _, s := range a.order {
+				if slices.Contains(ph.OnlyRoleIDs, s.RoleID) {
+					only = append(only, s)
+				}
+			}
+			a.order = only
+		}
 		a.mu.Unlock()
 		return true
 	}
@@ -711,7 +916,7 @@ func (a *Actor) awaitOrder(ctx context.Context, gen int, ph *domain.Phase) bool 
 		SeatID:     host.ID,
 		Visibility: domain.VisDM,
 		PhaseID:    ph.ID,
-		Text:       "本阶段顺序由你指定：排好所有玩家的顺序后点「确定顺序」。",
+		Text:       fmt.Sprintf("本阶段顺序由你指定：把 %d 位可以行动的角色排好顺序后点「确定顺序」。", len(a.phasePlayersLocked(ph))),
 	})
 	a.persistLocked()
 	a.mu.Unlock()
@@ -760,13 +965,16 @@ func (a *Actor) applyOrder(ph *domain.Phase, ids []string) error {
 	if a.m.Current(a.g) != ph {
 		return ErrNotAllowed{Reason: "阶段已切换"}
 	}
-	players := a.g.PlayerSeats()
+	// A phase with onlyRoleIds is played by that subset alone, so the host orders
+	// exactly those seats — asking for the whole table would leave the excluded
+	// role with a turn it cannot use.
+	players := a.phasePlayersLocked(ph)
 	byID := make(map[string]domain.Seat, len(players))
 	for _, s := range players {
 		byID[s.ID] = s
 	}
 	if len(ids) != len(players) {
-		return ErrNotAllowed{Reason: fmt.Sprintf("请把 %d 个玩家全部排进顺序里", len(players))}
+		return ErrNotAllowed{Reason: fmt.Sprintf("请把 %d 个能行动的角色全部排进顺序里", len(players))}
 	}
 	seen := map[string]bool{}
 	order := make([]domain.Seat, 0, len(ids))
@@ -817,7 +1025,13 @@ func (a *Actor) orderPromptLocked() *TurnPrompt {
 		p.PhaseID = ph.ID
 	}
 	p.Text = "按你想要的顺序点选玩家；不确定就选「随机」或「按入座」，再点「确定顺序」。"
-	for _, s := range a.g.PlayerSeats() {
+	var players []domain.Seat
+	if ph := a.m.Current(a.g); ph != nil {
+		players = a.phasePlayersLocked(ph)
+	} else {
+		players = a.g.PlayerSeats()
+	}
+	for _, s := range players {
 		p.Seats = append(p.Seats, TurnOption{SeatID: s.ID, Role: a.speakerLocked(s), Display: s.DisplayName, Kind: s.Kind})
 	}
 	return p
@@ -830,6 +1044,23 @@ func (a *Actor) orderNamesLocked(order []domain.Seat) string {
 		names = append(names, a.speakerLocked(s))
 	}
 	return strings.Join(names, " → ")
+}
+
+// phasePlayersLocked narrows the table to the seats a phase deals to. A phase
+// with onlyRoleIds keeps the seating order but drops everyone else, so the walk
+// never hands an empty turn to a role that may not act here.
+func (a *Actor) phasePlayersLocked(ph *domain.Phase) []domain.Seat {
+	players := a.g.PlayerSeats()
+	if ph == nil || len(ph.OnlyRoleIDs) == 0 {
+		return players
+	}
+	only := make([]domain.Seat, 0, len(ph.OnlyRoleIDs))
+	for _, s := range players {
+		if slices.Contains(ph.OnlyRoleIDs, s.RoleID) {
+			only = append(only, s)
+		}
+	}
+	return only
 }
 
 func (a *Actor) hostSeatLocked() *domain.Seat {
@@ -850,10 +1081,6 @@ func (a *Actor) runSearch(ctx context.Context, gen int) {
 		a.mu.Unlock()
 		return
 	}
-	limit := ph.PerPlayerPick
-	if limit <= 0 {
-		limit = 1
-	}
 	a.mu.Unlock()
 
 	// The order belongs to the phase, not to the seat: every turn goes through
@@ -862,13 +1089,14 @@ func (a *Actor) runSearch(ctx context.Context, gen int) {
 	if !a.prepareOrder(ctx, gen, ph) {
 		return
 	}
+	a.layoutQuotaLocked(ph)
 
 	for {
 		if !a.alive(gen) || ctx.Err() != nil {
 			return
 		}
 		a.mu.Lock()
-		next := a.nextSeat(a.searched, limit)
+		next := a.nextSearcherLocked(ph)
 		a.mu.Unlock()
 		if next == nil {
 			break
@@ -878,7 +1106,7 @@ func (a *Actor) runSearch(ctx context.Context, gen int) {
 				// Nothing left this seat may take: retire it for the phase, or the
 				// walk would keep handing it the same empty turn.
 				a.mu.Lock()
-				a.searched[next.ID] = limit
+				a.searched[next.ID] = a.searchLimitLocked(*next, ph)
 				a.mu.Unlock()
 			}
 		} else {
@@ -886,6 +1114,138 @@ func (a *Actor) runSearch(ctx context.Context, gen int) {
 		}
 	}
 	a.completePhase(ctx, gen)
+}
+
+// layoutQuotaLocked turns PickByRank into a per-seat map once the running order
+// is known: the first seat in the order draws PickByRank[0], the next
+// PickByRank[1], and anyone past the end takes the last figure. Callers hold mu.
+func (a *Actor) layoutQuotaLocked(ph *domain.Phase) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.searchQuota = nil
+	if len(ph.PickByRank) == 0 || len(a.order) == 0 {
+		return
+	}
+	quota := make(map[string]int, len(a.order))
+	last := ph.PickByRank[len(ph.PickByRank)-1]
+	for i, s := range a.order {
+		if i < len(ph.PickByRank) {
+			quota[s.ID] = ph.PickByRank[i]
+		} else {
+			quota[s.ID] = last
+		}
+	}
+	a.searchQuota = quota
+}
+
+// searchLimitLocked is how many cards one seat owes this round: the rank figure
+// when the script hands them out by favour, otherwise the flat phase limit.
+func (a *Actor) searchLimitLocked(seat domain.Seat, ph *domain.Phase) int {
+	if q, ok := a.searchQuota[seat.ID]; ok {
+		if q <= 0 {
+			return 1
+		}
+		return q
+	}
+	limit := ph.PickLimit()
+	if limit <= 0 {
+		limit = 1
+	}
+	return limit
+}
+
+// nextSearcherLocked walks the phase order and returns the next seat that may
+// actually draw. Seats whose round quota is spent — or whose bones ran out, or
+// were seized by 北照君's skill — are retired here instead of being handed a turn
+// that can only fail. Callers hold mu.
+func (a *Actor) nextSearcherLocked(ph *domain.Phase) *domain.Seat {
+	for {
+		next := a.searchSeatLocked()
+		if next == nil || a.picksLeftLocked(*next, ph) > 0 {
+			return next
+		}
+		a.searched[next.ID] = a.searchLimitLocked(*next, ph)
+	}
+}
+
+// searchSeatLocked is nextSeat with the rank quota applied: a seat is done once
+// it has taken its own printed figure, not once it has taken the flat one.
+func (a *Actor) searchSeatLocked() *domain.Seat {
+	if len(a.order) == 0 {
+		return nil
+	}
+	n := len(a.order)
+	for i := 0; i < n; i++ {
+		idx := (a.orderPos + i) % n
+		seat := &a.order[idx]
+		limit := 1
+		if ph := a.m.Current(a.g); ph != nil {
+			limit = a.searchLimitLocked(*seat, ph)
+		}
+		if a.searched[seat.ID] < limit {
+			a.orderPos = (idx + 1) % n
+			return seat
+		}
+	}
+	return nil
+}
+
+// picksLeftLocked is how many more cards one seat can take this round: the
+// printed quota, capped by the bones it still holds. Callers hold mu.
+func (a *Actor) picksLeftLocked(seat domain.Seat, ph *domain.Phase) int {
+	left := remainingPicks(a.searched[seat.ID], a.searchLimitLocked(seat, ph))
+	if cost := a.drawCost(ph); cost > 0 {
+		if afford := a.g.Points[seat.ID] / cost; afford < left {
+			left = afford
+		}
+	}
+	return left
+}
+
+// drawCost is how many action points one draw spends. A script with a point
+// pool costs one bone per card unless the phase says otherwise.
+func (a *Actor) drawCost(ph *domain.Phase) int {
+	if ph.DrawCost > 0 {
+		return ph.DrawCost
+	}
+	if a.sc.Meta.StartPoints > 0 {
+		return 1
+	}
+	return 0
+}
+
+// pointsLabel is the printed name of the currency (仙骨), or a neutral default.
+func (a *Actor) pointsLabel() string {
+	if s := strings.TrimSpace(a.sc.Meta.PointsLabel); s != "" {
+		return s
+	}
+	return "行动点"
+}
+
+// hasPointPoolLocked reports whether this script hands out any points at all:
+// either a flat Meta.StartPoints or a per-role figure (K12 每宫的圣宠值).
+// Callers hold mu.
+func (a *Actor) hasPointPoolLocked() bool {
+	if a.sc.Meta.StartPoints > 0 {
+		return true
+	}
+	for _, r := range a.sc.Roles {
+		if r.Points > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// startPointsLocked is what one seat begins with: the role's own figure wins
+// over the flat Meta.StartPoints.
+func (a *Actor) startPointsLocked(seat domain.Seat) int {
+	for _, r := range a.sc.Roles {
+		if r.ID == seat.RoleID && r.Points > 0 {
+			return r.Points
+		}
+	}
+	return a.sc.Meta.StartPoints
 }
 
 func (a *Actor) alive(gen int) bool {
@@ -913,13 +1273,13 @@ func (a *Actor) awaitSearch(ctx context.Context, gen int, seat domain.Seat, ph *
 		a.mu.Unlock()
 		return false
 	}
-	left := ph.PerPlayerPick - a.searched[seat.ID]
+	left := a.picksLeftLocked(seat, ph)
 	// A seat can run out of cards it is allowed to take while it still owes
 	// picks: its own frisking clue goes back to the pile, a deep-dive card is
 	// still missing its item. Retire the seat here, the same way the agent walk
 	// does, instead of handing it a button that can only fail.
 	if left > 0 && len(a.availableCluesLocked(seat, ph)) == 0 {
-		a.searched[seat.ID] = ph.PerPlayerPick
+		a.searched[seat.ID] = a.searchLimitLocked(seat, ph)
 		a.appendLocked(domain.Event{
 			Type:       domain.EvSystem,
 			SeatID:     seat.ID,
@@ -934,10 +1294,16 @@ func (a *Actor) awaitSearch(ctx context.Context, gen int, seat domain.Seat, ph *
 	ch := make(chan ClientMessage, 1)
 	a.waiters[seat.ID] = ch
 	prompt := fmt.Sprintf("轮到你搜证，可搜 %d 次：%s", left, strings.Join(a.searchableTitlesLocked(seat, ph), "、"))
+	if plan := a.pendingDrawsLocked(seat, ph); plan != "" {
+		prompt = fmt.Sprintf("轮到你搜证，本轮还要抽：%s", plan)
+	}
 	if ph.SearchMode == domain.SearchRandom {
 		// Random mode hides the list on purpose: knowing the titles would turn
 		// "draw" back into "choose".
 		prompt = fmt.Sprintf("轮到你搜证，还剩 %d 次随机抽取", left)
+		if plan := a.pendingDrawsLocked(seat, ph); plan != "" {
+			prompt = fmt.Sprintf("轮到你搜证，本轮还要抽：%s", plan)
+		}
 	}
 	a.appendLocked(domain.Event{
 		Type:       domain.EvSystem,
@@ -1000,12 +1366,22 @@ func (a *Actor) awaitSearch(ctx context.Context, gen int, seat domain.Seat, ph *
 			case "search.clue":
 				if err := a.applySearch(seat, msg.ClueID, ph); err != nil {
 					a.notify(seat, err.Error())
+					if a.picksLeftLocked(seat, ph) <= 0 {
+						// 仙骨正好在刚才那一手花完了（或被人抽干）：这个回合已经没有可做的事。
+						return true
+					}
 					if timer != nil {
 						timer.Reset(a.cfg.floor())
 					}
 					continue
 				}
 				if left := a.keepTurn(seat, ph, "搜证"); left > 0 {
+					if timer != nil {
+						timer.Reset(a.cfg.floor())
+					}
+					continue
+				}
+				if a.holdForGranted(seat, ph) {
 					if timer != nil {
 						timer.Reset(a.cfg.floor())
 					}
@@ -1027,6 +1403,28 @@ func (a *Actor) awaitSearch(ctx context.Context, gen int, seat domain.Seat, ph *
 					}
 					continue
 				}
+				if a.holdForGranted(seat, ph) {
+					if timer != nil {
+						timer.Reset(a.cfg.floor())
+					}
+					continue
+				}
+				return true
+			case "search.pass":
+				// 保留仙骨另作他用：主动结束本轮，剩下的额度作废。
+				a.mu.Lock()
+				if a.m.Current(a.g) == ph {
+					a.searched[seat.ID] = a.searchLimitLocked(seat, ph)
+					a.appendLocked(domain.Event{
+						Type:       domain.EvSystem,
+						SeatID:     seat.ID,
+						Visibility: SeatVisibility(seat.ID),
+						PhaseID:    ph.ID,
+						Text:       fmt.Sprintf("你结束了本轮搜证，还剩 %d 根%s", a.g.Points[seat.ID], a.pointsLabel()),
+					})
+					a.persistLocked()
+				}
+				a.mu.Unlock()
 				return true
 			default:
 				a.sideCommand(seat, msg)
@@ -1045,7 +1443,7 @@ func (a *Actor) keepTurn(seat domain.Seat, ph *domain.Phase, what string) int {
 	if a.m.Current(a.g) != ph {
 		return 0
 	}
-	left := remainingPicks(a.searched[seat.ID], ph.PerPlayerPick)
+	left := remainingPicks(a.searched[seat.ID], a.searchLimitLocked(seat, ph))
 	if left > 0 {
 		a.appendLocked(domain.Event{
 			Type:       domain.EvSystem,
@@ -1061,12 +1459,55 @@ func (a *Actor) keepTurn(seat domain.Seat, ph *domain.Phase, what string) int {
 	return left
 }
 
+// holdForGranted keeps the floor after the quota is spent as long as a
+// 「可获得曲径通幽 N」 card is still waiting to be named. That card is a bonus
+// printed on the parent clue, so it must stay claimable on the seat's very
+// last draw instead of silently expiring with the turn.
+func (a *Actor) holdForGranted(seat domain.Seat, ph *domain.Phase) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.m.Current(a.g) != ph || len(a.grantedOptionsLocked(seat, ph)) == 0 {
+		return false
+	}
+	a.floor = &Floor{SeatID: seat.ID, PhaseID: ph.ID, ExpiresAt: time.Now().Add(a.cfg.floor())}
+	a.persistLocked()
+	return true
+}
+
 // availableCluesLocked lists the clues one seat may still take, mirroring the
 // filter of claimClue so the UI only ever offers accepted choices. Callers hold
 // mu.
 func (a *Actor) availableCluesLocked(seat domain.Seat, ph *domain.Phase) []*domain.Clue {
+	plan := ph.DrawPlan()
+	if len(plan) > 0 && a.searched[seat.ID] >= len(plan) {
+		// A typed round ends exactly when its plan is spent; without this the
+		// last kind would keep offering cards after the quota was used up.
+		return nil
+	}
+	want := drawKind(ph, a.searched[seat.ID])
+	out := a.gatherCluesLocked(seat, ph, want, false)
+	if len(out) == 0 {
+		// 印的规则是「抽到自己的线索卡请放回卡堆内」。牌堆快见底时放回去也
+		// 抽不到别的，坚持不放只会让末位玩家少拿线索；这时按卡类退让，
+		// 把本人房间的卡也列上。自己的搜身线索不能退：那等于把本人身上的
+		// 物证摊给本人看，印规则一律要求放回。
+		for _, c := range a.gatherCluesLocked(seat, ph, want, true) {
+			if patDownOf(c, seat) {
+				continue
+			}
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// gatherCluesLocked collects the cards claimClue would accept right now. When
+// allowOwn is set, the "your own room" guard is skipped — the caller only does
+// that after finding nothing else left of the wanted kind.
+func (a *Actor) gatherCluesLocked(seat domain.Seat, ph *domain.Phase, want string, allowOwn bool) []*domain.Clue {
 	var out []*domain.Clue
-	for _, cid := range ph.CluePool {
+	ownFloor := a.seatFloorLocked(seat)
+	for _, cid := range a.searchPoolLocked(ph) {
 		c := a.m.TokenClue(cid)
 		if c == nil {
 			continue
@@ -1075,15 +1516,249 @@ func (a *Actor) availableCluesLocked(seat domain.Seat, ph *domain.Phase) []*doma
 		if st.FoundBySeat != "" || st.Revealed {
 			continue
 		}
+		if want != "" && c.Kind != want {
+			continue
+		}
 		if c.OwnerRoleID != "" && c.OwnerRoleID != seat.RoleID {
 			continue
 		}
-		if a.clueBlockedLocked(seat, c) != "" {
+		if a.clueBlockedLocked(seat, c) != "" && !(allowOwn && (c.SubjectRoleID == seat.RoleID || sameFloor(c, ownFloor))) {
 			continue
 		}
 		out = append(out, c)
 	}
 	return out
+}
+
+// dealPrivateCluesLocked hands the phase's 「专属线索」 to their owners the
+// moment it opens. The card never sits in a pool, so no random draw can leak
+// it, and the owner gets the same transcript line a search would produce.
+// Callers hold mu.
+func (a *Actor) dealPrivateCluesLocked(ph *domain.Phase) {
+	if len(ph.PrivateClues) == 0 {
+		return
+	}
+	now := time.Now().UTC()
+	for _, id := range ph.PrivateClues {
+		c := a.m.TokenClue(id)
+		if c == nil || c.OwnerRoleID == "" {
+			continue
+		}
+		st := a.g.ClueState[id]
+		if st.FoundBySeat != "" || st.Revealed {
+			continue
+		}
+		var owner *domain.Seat
+		for i := range a.g.Seats {
+			if a.g.Seats[i].RoleID == c.OwnerRoleID && a.g.Seats[i].Kind != domain.SeatSpectator {
+				owner = &a.g.Seats[i]
+				break
+			}
+		}
+		if owner == nil {
+			continue
+		}
+		st.ClueID = id
+		st.FoundBySeat = owner.ID
+		st.PrivateOwner = c.OwnerRoleID
+		st.FoundAt = now
+		a.g.ClueState[id] = st
+		a.appendLocked(domain.Event{
+			Type:       domain.EvSystem,
+			PhaseID:    ph.ID,
+			SeatID:     owner.ID,
+			ClueID:     id,
+			Visibility: SeatVisibility(owner.ID),
+			Text:       fmt.Sprintf("你收到了专属线索【%s】：%s", c.Title, c.Content),
+			Meta:       map[string]string{"clueId": id, "title": c.Title},
+		})
+	}
+}
+
+// grantedCluesLocked names the out-of-pool cards one seat may claim because it
+// already found a clue that prints them ("获得这张线索，可开启曲径通幽 N").
+// The parent may have been found rounds ago, so the set is derived from the
+// whole clue log rather than from the current phase. Callers hold mu.
+func (a *Actor) grantedCluesLocked(seat domain.Seat) map[string]bool {
+	out := map[string]bool{}
+	for id, st := range a.g.ClueState {
+		if st.FoundBySeat != seat.ID {
+			continue
+		}
+		c := a.m.TokenClue(id)
+		if c == nil {
+			continue
+		}
+		for _, g := range c.GrantsClue {
+			out[g] = true
+		}
+	}
+	return out
+}
+
+// patDownOf reports whether the card is this seat's own body-search clue. The
+// printed rule 「抽到自己的线索卡请放回卡堆内」 always binds here: relaxing it
+// would deal the seat its own evidence. Other cards that merely belong to the
+// seat (its room) may still be taken once nothing else is left in the deck.
+func patDownOf(c *domain.Clue, seat domain.Seat) bool {
+	if c.SubjectRoleID == "" || c.SubjectRoleID != seat.RoleID {
+		return false
+	}
+	// K 系列的牌堆 kind 是卡册名（纤毫毕现／临渊结网），搜身信息只落在
+	// location/title 上；只看 kind 会把自己的搜身卡当成普通房间卡退让出去。
+	return strings.Contains(c.Kind, "搜身") ||
+		strings.Contains(c.Location, "搜身") ||
+		strings.Contains(c.Title, "搜身")
+}
+
+// grantedClaimableLocked reports whether clueID is a 「可获得曲径通幽 N」 card
+// whose parent card this seat holds and which nobody has taken yet. Such a card
+// is a bonus printed on the parent clue: it never consumes a pick, so it stays
+// claimable for the whole phase even after this seat's turns are over.
+// Callers hold mu.
+func (a *Actor) grantedClaimableLocked(seat domain.Seat, clueID string) bool {
+	if clueID == "" || !a.grantedCluesLocked(seat)[clueID] {
+		return false
+	}
+	st := a.g.ClueState[clueID]
+	if st.FoundBySeat != "" || st.Revealed {
+		return false
+	}
+	c := a.m.TokenClue(clueID)
+	if c == nil {
+		return false
+	}
+	if c.OwnerRoleID != "" && c.OwnerRoleID != seat.RoleID {
+		return false
+	}
+	if a.clueBlockedLocked(seat, c) == "" {
+		return true
+	}
+	// 「缺少开启线索的物品…达成共识后可共同开启」：物品在别人手上也行，
+	// 但只在确实有那个人时才算可领，否则按钮会亮着却点不动。
+	return len(c.RequiresItems) > 0 && a.itemPartnerLocked(seat, c) != nil
+}
+
+// grantedOptionsLocked lists the 「可获得曲径通幽 N」 cards one seat may name
+// right now: the parent card is in hand, the named card is still unfound, and
+// either the seat or a co-op partner holds the printed items. This is the only
+// path to a deep-dive card — random draws never deal them.
+func (a *Actor) grantedOptionsLocked(seat domain.Seat, ph *domain.Phase) []SearchOption {
+	granted := a.grantedCluesLocked(seat)
+	var out []SearchOption
+	for i := range a.sc.Clues {
+		c := &a.sc.Clues[i]
+		if !granted[c.ID] {
+			continue
+		}
+		st := a.g.ClueState[c.ID]
+		if st.FoundBySeat != "" || st.Revealed {
+			continue
+		}
+		if c.OwnerRoleID != "" && c.OwnerRoleID != seat.RoleID {
+			continue
+		}
+		if reason := a.clueBlockedLocked(seat, c); reason != "" {
+			if len(c.RequiresItems) == 0 || a.itemPartnerLocked(seat, c) == nil {
+				continue
+			}
+		}
+		out = append(out, SearchOption{ID: c.ID, Hint: grantedHint(c), Granted: true})
+	}
+	return out
+}
+
+// itemPartnerLocked finds another seat holding every item a granted card asks
+// for. The printed rule is 「缺少开启线索的物品…达成共识后可共同开启」: the
+// card stays with the finder, the item does not have to change hands.
+func (a *Actor) itemPartnerLocked(seat domain.Seat, c *domain.Clue) *domain.Seat {
+	if len(c.RequiresItems) == 0 {
+		return nil
+	}
+	for i := range a.g.Seats {
+		s := &a.g.Seats[i]
+		if s.ID == seat.ID || s.Kind == domain.SeatSpectator {
+			continue
+		}
+		if a.g.HasItems(s.ID, c.RequiresItems) {
+			return s
+		}
+	}
+	return nil
+}
+
+// grantedHint is the back of a 曲径通幽 card: the pile name and its number.
+func grantedHint(c *domain.Clue) string {
+	if s := strings.TrimSpace(c.Back); s != "" {
+		return s
+	}
+	if c.Number != "" {
+		return "曲径通幽 " + c.Number
+	}
+	return c.Title
+}
+
+// searchPoolLocked is the set of cards this round may deal at all. A curated
+// pool wins; a phase that only lists draws takes its cards from the whole deck
+// by kind, which is how the printed books do it ("从轮船线索里随机抽 3 张").
+func (a *Actor) searchPoolLocked(ph *domain.Phase) []string {
+	if len(ph.CluePool) > 0 {
+		return ph.CluePool
+	}
+	plan := ph.DrawPlan()
+	if len(plan) == 0 {
+		return nil
+	}
+	kinds := map[string]bool{}
+	for _, k := range plan {
+		kinds[k] = true
+	}
+	var out []string
+	for _, c := range a.m.sc.Clues {
+		if len(kinds) == 0 || kinds[""] || kinds[c.Kind] {
+			out = append(out, c.ID)
+		}
+	}
+	return out
+}
+
+// drawKind is the kind of the next card one seat owes, or "" when this phase
+// does not split its deck. Reading it off the plan means the mix cannot drift:
+// the first pick is whatever the first rule says, no matter what the seat wants.
+func drawKind(ph *domain.Phase, drawn int) string {
+	plan := ph.DrawPlan()
+	if drawn < 0 || drawn >= len(plan) {
+		return ""
+	}
+	return plan[drawn]
+}
+
+// pendingDrawsLocked renders what is left of a seat's typed plan, e.g.
+// "随身物品 1 张、轮船线索 2 张", so the prompt tells the table what the next
+// clicks will be instead of only how many are left.
+func (a *Actor) pendingDrawsLocked(seat domain.Seat, ph *domain.Phase) string {
+	plan := ph.DrawPlan()
+	done := a.searched[seat.ID]
+	if len(plan) == 0 || done >= len(plan) {
+		return ""
+	}
+	var kinds []string
+	counts := map[string]int{}
+	for _, k := range plan[done:] {
+		if counts[k] == 0 {
+			kinds = append(kinds, k)
+		}
+		counts[k]++
+	}
+	parts := make([]string, 0, len(kinds))
+	for _, k := range kinds {
+		name := k
+		if name == "" {
+			name = "任意线索"
+		}
+		parts = append(parts, fmt.Sprintf("%s %d 张", name, counts[k]))
+	}
+	return strings.Join(parts, "、")
 }
 
 // searchOptionsLocked renders the pick list for one seat: only the hint on the
@@ -1123,7 +1798,14 @@ func (a *Actor) searchableTitlesLocked(seat domain.Seat, ph *domain.Phase) []str
 
 func (a *Actor) applySearch(seat domain.Seat, clueID string, ph *domain.Phase) error {
 	if ph.SearchMode == domain.SearchRandom {
-		return ErrNotAllowed{Reason: "本阶段是随机抽取，请点「随机抽取」"}
+		// 随机抽取的轮次里唯一能点名的，是底卡写着「可获得曲径通幽 N」的那张：
+		// 印的规则就是「抽到这张卡的人可获取一张指定的深入调查线索」。
+		a.mu.Lock()
+		granted := a.grantedCluesLocked(seat)[clueID]
+		a.mu.Unlock()
+		if !granted {
+			return ErrNotAllowed{Reason: "本阶段是随机抽取，请点「随机抽取」"}
+		}
 	}
 	return a.claimClue(seat, clueID, ph)
 }
@@ -1155,14 +1837,22 @@ func (a *Actor) claimClue(seat domain.Seat, clueID string, ph *domain.Phase) err
 		return ErrNotAllowed{Reason: "阶段已切换"}
 	}
 	inPool := false
-	for _, id := range ph.CluePool {
+	for _, id := range a.searchPoolLocked(ph) {
 		if id == clueID {
 			inPool = true
 			break
 		}
 	}
-	if !inPool {
+	// 底卡指定的深入调查卡不在本阶段牌堆里，但它的主人可以点名要（同一阶段
+	// 或之后任何一轮都行）。这条通道只给「已经抽到写它名字的那张卡」的人。
+	granted := a.grantedCluesLocked(seat)[clueID]
+	if !inPool && !granted {
 		return ErrNotAllowed{Reason: "本轮无法搜到该线索"}
+	}
+	if len(ph.OnlyRoleIDs) > 0 && !slices.Contains(ph.OnlyRoleIDs, seat.RoleID) {
+		// The turn order already skips these seats; this is the belt to that
+		// suspenders, so a stray request cannot take another role's card.
+		return ErrNotAllowed{Reason: "本阶段只有指定角色可以搜证"}
 	}
 	c := a.m.TokenClue(clueID)
 	if c == nil {
@@ -1175,13 +1865,47 @@ func (a *Actor) claimClue(seat domain.Seat, clueID string, ph *domain.Phase) err
 	if c.OwnerRoleID != "" && c.OwnerRoleID != seat.RoleID {
 		return ErrNotAllowed{Reason: "该线索属于其他人的私人物品"}
 	}
+	var partner *domain.Seat
 	if reason := a.clueBlockedLocked(seat, c); reason != "" {
-		return ErrNotAllowed{Reason: reason}
+		if granted {
+			// 「缺少开启线索的物品…达成共识后可共同开启」：物品在桌边任何人
+			// 手上都行，不用搬家，但要记下是谁一起开的。
+			partner = a.itemPartnerLocked(seat, c)
+		}
+		if partner == nil {
+			// 「抽到自己的卡请放回卡堆内」只在还有别的卡可抽时成立。牌堆见底时
+			// 放回去也抽不到，只能把这张给他，否则末位座位会少拿一张。这里必须
+			// 问「本轮还有没有任何一张能抽的卡」，不能只问同一种卡：同楼层的卡
+			// 按定义永远凑不出非本楼层的同类，按同一种卡判断等于无条件放行。
+			relaxable := sameFloor(c, a.seatFloorLocked(seat)) || (c.SubjectRoleID == seat.RoleID && !patDownOf(c, seat))
+			if !(relaxable && len(a.gatherCluesLocked(seat, ph, "", false)) == 0) {
+				return ErrNotAllowed{Reason: reason}
+			}
+		}
 	}
-	if a.searched[seat.ID] >= ph.PerPlayerPick {
-		return ErrNotAllowed{Reason: "本轮搜证次数已用完"}
+	if !granted {
+		// 底卡指定的那张深入调查是附赠：不占本轮 2/4/6 张的名额，也不花行动点。
+		if want := drawKind(ph, a.searched[seat.ID]); want != "" && c.Kind != want {
+			return ErrNotAllowed{Reason: fmt.Sprintf("本轮这一步要先抽%s", want)}
+		}
+		if a.searched[seat.ID] >= a.searchLimitLocked(seat, ph) {
+			return ErrNotAllowed{Reason: "本轮搜证次数已用完"}
+		}
+		cost := a.drawCost(ph)
+		if cost > 0 && a.g.Points[seat.ID] < cost {
+			return ErrNotAllowed{Reason: fmt.Sprintf("你的%s只剩 %d 根，不够抽卡了", a.pointsLabel(), a.g.Points[seat.ID])}
+		}
+		a.searched[seat.ID]++
+		if cost > 0 {
+			// 抽卡本身就要花仙骨（K6：每抽 1 张花 1 根），这也是技能挑时间的原因。
+			a.g.Points[seat.ID] -= cost
+		}
+		if c.ExtraDraw && a.searched[seat.ID] > 0 {
+			// 「获得这张线索的巫师，可以抽取一张额外的线索」：把这一次退回去，
+			// 等于本轮多给一张，且仍受阶段卡池与本人房间的约束。
+			a.searched[seat.ID]--
+		}
 	}
-	a.searched[seat.ID]++
 	st.ClueID = clueID
 	st.FoundBySeat = seat.ID
 	if c.OwnerRoleID != "" {
@@ -1236,6 +1960,24 @@ func (a *Actor) claimClue(seat domain.Seat, clueID string, ph *domain.Phase) err
 			Text:       fmt.Sprintf("你获得了物品【%s】", c.GrantsItem),
 		})
 	}
+	if partner != nil {
+		// 共同开启不改变卡的主人：卡仍然归抽到底卡的人，合作者只知道内容。
+		a.appendLocked(domain.Event{
+			Type:       domain.EvSystem,
+			PhaseID:    ph.ID,
+			SeatID:     seat.ID,
+			Visibility: SeatVisibility(seat.ID),
+			Text:       fmt.Sprintf("你与 %s 共同开启了曲径通幽【%s】", a.speakerLocked(*partner), c.Title),
+		})
+		a.appendLocked(domain.Event{
+			Type:       domain.EvSystem,
+			PhaseID:    ph.ID,
+			SeatID:     partner.ID,
+			Visibility: SeatVisibility(partner.ID),
+			Text:       fmt.Sprintf("你与 %s 共同开启了曲径通幽【%s】：%s", a.speakerLocked(seat), c.Title, c.Content),
+			Meta:       map[string]string{"clueId": clueID, "title": c.Title},
+		})
+	}
 	if public {
 		a.unlockKeywordsLocked(c.Title + " " + c.Content)
 	}
@@ -1250,6 +1992,9 @@ func (a *Actor) clueBlockedLocked(seat domain.Seat, c *domain.Clue) string {
 	if c.SubjectRoleID != "" && c.SubjectRoleID == seat.RoleID {
 		return "这是你本人的搜身线索，放回原位后重新抽取"
 	}
+	if sameFloor(c, a.seatFloorLocked(seat)) {
+		return "这是你所在楼层的线索，放回原位后重新抽取"
+	}
 	if !a.g.HasItems(seat.ID, c.RequiresItems) {
 		return fmt.Sprintf("先拿到%s，才能翻这条线索", strings.Join(c.RequiresItems, "、"))
 	}
@@ -1262,9 +2007,29 @@ func (a *Actor) clueBlockedLocked(seat domain.Seat, c *domain.Clue) string {
 	return ""
 }
 
+// seatFloorLocked is the storey the seat's room sits on, or "" when the book
+// does not use floors. Cards on that storey are stocked back into the deck.
+func (a *Actor) seatFloorLocked(seat domain.Seat) string {
+	for _, r := range a.m.sc.Roles {
+		if r.ID == seat.RoleID {
+			return r.Floor
+		}
+	}
+	return ""
+}
+
+// sameFloor reports whether a card belongs to the storey the seat lives on.
+func sameFloor(c *domain.Clue, floor string) bool {
+	return floor != "" && c.Floor != "" && c.Floor == floor
+}
+
 // unlockKeywordsLocked opens every memory fragment whose keyword just entered
 // the public air — a spoken line or a clue shown to the table. The fragment
 // itself stays private to its role; only the trigger is public.
+//
+// A fragment printed as a chain (「当前两个阶段都已解锁」) lists its parents in
+// UnlockedBy and waits for them; one printed as 「说到 A 和 B 这两个词」 sets
+// KeywordsAll and waits until both have been said somewhere at the table.
 func (a *Actor) unlockKeywordsLocked(text string) {
 	text = strings.TrimSpace(text)
 	if text == "" {
@@ -1274,6 +2039,7 @@ func (a *Actor) unlockKeywordsLocked(text string) {
 	if ph := a.m.Current(a.g); ph != nil {
 		phaseID = ph.ID
 	}
+	heard, heardBuilt := "", false
 	for i := range a.sc.Clues {
 		c := &a.sc.Clues[i]
 		if c.OwnerRoleID == "" || len(c.Keywords) == 0 {
@@ -1283,15 +2049,37 @@ func (a *Actor) unlockKeywordsLocked(text string) {
 		if st.Unlocked {
 			continue
 		}
+		if !a.parentsUnlockedLocked(c) {
+			continue
+		}
+		seen := text
+		if c.KeywordsAll {
+			if !heardBuilt {
+				heard, heardBuilt = a.publicTextLocked(), true
+			}
+			seen = heard
+		}
 		hit := ""
+		all := true
+		var hits []string
 		for _, kw := range c.Keywords {
-			if kw != "" && strings.Contains(text, kw) {
+			if kw == "" {
+				continue
+			}
+			if !strings.Contains(seen, kw) {
+				all = false
+				continue
+			}
+			hits = append(hits, kw)
+			if hit == "" {
 				hit = kw
-				break
 			}
 		}
-		if hit == "" {
+		if hit == "" || (c.KeywordsAll && !all) {
 			continue
+		}
+		if c.KeywordsAll {
+			hit = strings.Join(hits, "、")
 		}
 		st.ClueID = c.ID
 		st.Unlocked = true
@@ -1312,6 +2100,35 @@ func (a *Actor) unlockKeywordsLocked(text string) {
 		})
 	}
 	a.persistLocked()
+}
+
+// parentsUnlockedLocked reports whether every fragment this one waits for has
+// already been opened. Clues without parents are always ready.
+func (a *Actor) parentsUnlockedLocked(c *domain.Clue) bool {
+	for _, cid := range c.UnlockedBy {
+		if !a.g.ClueState[cid].Unlocked {
+			return false
+		}
+	}
+	return true
+}
+
+// publicTextLocked is everything the table has heard so far: spoken lines and
+// the text of clues that were read aloud. It is what a 「说到这两个词」 trigger
+// matches against, so the two words need not land in the same sentence.
+func (a *Actor) publicTextLocked() string {
+	var b strings.Builder
+	for _, ev := range a.g.Events {
+		if ev.Visibility != domain.VisPublic {
+			continue
+		}
+		switch ev.Type {
+		case domain.EvSpeech, domain.EvClueRevealed:
+			b.WriteString(ev.Text)
+			b.WriteString("\n")
+		}
+	}
+	return b.String()
 }
 
 func (a *Actor) agentSearch(seat domain.Seat, ph *domain.Phase) bool {
@@ -1395,6 +2212,219 @@ func (a *Actor) revealClue(seat domain.Seat, clueID string) error {
 	a.persistLocked()
 	a.mu.Unlock()
 	return nil
+}
+
+// ---- special skills ----
+
+// skillViewLocked tells one seat what its printed ability can do right now.
+func (a *Actor) skillViewLocked(seat domain.Seat) *SkillView {
+	role := a.m.idx.RoleByID(seat.RoleID)
+	if role == nil || role.Skill == nil {
+		return nil
+	}
+	sk := role.Skill
+	view := &SkillView{
+		ID:        sk.ID,
+		Name:      sk.Name,
+		Text:      sk.Text,
+		Cost:      sk.Cost,
+		AllCost:   sk.AllCost,
+		ExactCost: sk.ExactCost,
+		Target:    sk.Target,
+		Used:      a.g.SkillsUsed[seat.ID],
+	}
+	ph := a.m.Current(a.g)
+	mine := a.g.Points[seat.ID]
+	switch {
+	case view.Used:
+		view.Why = "已经用过了"
+	case ph == nil || ph.Type != domain.PhaseSearch:
+		view.Why = "只能在搜证环节发动"
+	case sk.ExactCost > 0 && mine != sk.ExactCost:
+		view.Why = fmt.Sprintf("需要正好 %d 根%s（现在 %d 根）", sk.ExactCost, a.pointsLabel(), mine)
+	case sk.AllCost && mine <= 0:
+		view.Why = "已经没有仙骨可以烧了"
+	case !sk.AllCost && mine < sk.Cost:
+		view.Why = fmt.Sprintf("需要 %d 根%s（现在 %d 根）", sk.Cost, a.pointsLabel(), mine)
+	default:
+		view.Ready = true
+	}
+	return view
+}
+
+// useSkill fires the seat's one-shot special ability. Every use is announced:
+// seizing draws, burning bones or opening a hand changes what the rest of the
+// table can do, so none of it may happen silently.
+func (a *Actor) useSkill(seat domain.Seat, targetID string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	ph := a.m.Current(a.g)
+	if ph == nil || ph.Type != domain.PhaseSearch {
+		return ErrNotAllowed{Reason: "特殊技能只能在搜证环节发动"}
+	}
+	role := a.m.idx.RoleByID(seat.RoleID)
+	if role == nil || role.Skill == nil {
+		return ErrNotAllowed{Reason: "你的角色没有特殊技能"}
+	}
+	sk := role.Skill
+	if a.g.SkillsUsed[seat.ID] {
+		return ErrNotAllowed{Reason: fmt.Sprintf("「%s」全程只能发动一次，你已经用过了", sk.Name)}
+	}
+	mine := a.g.Points[seat.ID]
+	cost := sk.Cost
+	switch {
+	case sk.ExactCost > 0 && mine != sk.ExactCost:
+		return ErrNotAllowed{Reason: fmt.Sprintf("「%s」只能在你正好有 %d 根%s时发动（现在 %d 根）", sk.Name, sk.ExactCost, a.pointsLabel(), mine)}
+	case sk.ExactCost > 0:
+		cost = sk.ExactCost
+	case sk.AllCost:
+		if mine <= 0 {
+			return ErrNotAllowed{Reason: "你已经没有仙骨可以烧了"}
+		}
+		cost = mine
+	case mine < cost:
+		return ErrNotAllowed{Reason: fmt.Sprintf("发动「%s」要 %d 根%s，你只有 %d 根", sk.Name, cost, a.pointsLabel(), mine)}
+	}
+	target, err := a.skillTargetLocked(seat, sk, targetID)
+	if err != nil {
+		return err
+	}
+
+	text := ""
+	switch sk.Effect {
+	case domain.SkillStealDraws:
+		rest := a.picksLeftLocked(*target, ph)
+		if rest <= 0 {
+			return ErrNotAllowed{Reason: fmt.Sprintf("%s 这一轮已经没有抽卡权可以掠夺了", a.speakerLocked(*target))}
+		}
+		a.searched[target.ID] = a.searchLimitLocked(*target, ph)
+		a.searched[seat.ID] -= rest
+		text = fmt.Sprintf("%s 发动「%s」，夺走了 %s 这一轮剩下的 %d 次抽卡权", a.speakerLocked(seat), sk.Name, a.speakerLocked(*target), rest)
+	case domain.SkillBurnPoints:
+		burned := a.g.Points[target.ID]
+		a.g.Points[target.ID] = 0
+		text = fmt.Sprintf("%s 发动「%s」，焚尽自身 %d 根%s，毁去了 %s 剩余的 %d 根%s", a.speakerLocked(seat), sk.Name, cost, a.pointsLabel(), a.speakerLocked(*target), burned, a.pointsLabel())
+	case domain.SkillShowClues:
+		a.skillShowCluesLocked(seat, *target, sk)
+		scope := "只给自己看"
+		if sk.Public {
+			scope = "向全员展示"
+		}
+		count := "全部"
+		if sk.Value > 0 {
+			count = fmt.Sprintf("%d 张", sk.Value)
+		}
+		text = fmt.Sprintf("%s 发动「%s」，要求 %s %s线索卡（%s）", a.speakerLocked(seat), sk.Name, a.speakerLocked(*target), scope, count)
+	case domain.SkillGrantPoints:
+		a.g.Points[target.ID] += sk.Value
+		text = fmt.Sprintf("%s 发动「%s」，%s 恢复 %d 根%s（现 %d 根）", a.speakerLocked(seat), sk.Name, a.speakerLocked(*target), sk.Value, a.pointsLabel(), a.g.Points[target.ID])
+	default:
+		return ErrNotAllowed{Reason: "这个技能需要按剧本自行结算"}
+	}
+
+	a.g.Points[seat.ID] -= cost
+	if a.g.SkillsUsed == nil {
+		a.g.SkillsUsed = map[string]bool{}
+	}
+	a.g.SkillsUsed[seat.ID] = true
+	a.appendLocked(domain.Event{Type: domain.EvSystem, PhaseID: ph.ID, SeatID: seat.ID, RoleID: seat.RoleID, Text: text})
+	a.persistLocked()
+	return nil
+}
+
+// skillTargetLocked resolves who a skill points at.
+func (a *Actor) skillTargetLocked(seat domain.Seat, sk *domain.Skill, targetID string) (*domain.Seat, error) {
+	if sk.TargetRoleID != "" {
+		for i := range a.g.Seats {
+			s := &a.g.Seats[i]
+			if s.RoleID == sk.TargetRoleID && s.Kind != domain.SeatSpectator {
+				return s, nil
+			}
+		}
+		return nil, ErrNotAllowed{Reason: "技能目标角色不在房间里"}
+	}
+	switch sk.Target {
+	case "next":
+		for i, s := range a.order {
+			if s.ID != seat.ID {
+				continue
+			}
+			if i+1 < len(a.order) {
+				t := a.order[i+1]
+				return &t, nil
+			}
+			return nil, ErrNotAllowed{Reason: "你是本轮最后一位道友，后面没有人可以掠夺"}
+		}
+		return nil, ErrNotAllowed{Reason: "本轮顺序里还没有你，不能掠夺下一位"}
+	case "other":
+		if targetID == "" {
+			return nil, ErrNotAllowed{Reason: "这个技能要点明一位道友"}
+		}
+		t := a.g.SeatByID(targetID)
+		if t == nil || t.Kind == domain.SeatSpectator {
+			return nil, ErrNotAllowed{Reason: "技能目标不在桌上"}
+		}
+		if t.ID == seat.ID {
+			return nil, ErrNotAllowed{Reason: "这个技能不能对自己用"}
+		}
+		return t, nil
+	}
+	return nil, nil
+}
+
+// skillShowClues opens the target's hand: Value cards (0 means every card it
+// holds) go to the caster alone, or to the whole table when Public is set.
+func (a *Actor) skillShowCluesLocked(caster, target domain.Seat, sk *domain.Skill) {
+	ph := a.m.Current(a.g)
+	phaseID := ""
+	if ph != nil {
+		phaseID = ph.ID
+	}
+	var held []string
+	for _, c := range a.sc.Clues {
+		st := a.g.ClueState[c.ID]
+		if st.FoundBySeat == target.ID && !st.Revealed {
+			held = append(held, c.ID)
+		}
+	}
+	limit := sk.Value
+	if limit <= 0 || limit > len(held) {
+		limit = len(held)
+	}
+	for _, id := range held[:limit] {
+		c := a.m.TokenClue(id)
+		if c == nil {
+			continue
+		}
+		if sk.Public {
+			st := a.g.ClueState[id]
+			st.Revealed = true
+			st.RevealedBy = target.ID
+			st.RevealedAt = time.Now().UTC()
+			a.g.ClueState[id] = st
+			a.appendLocked(domain.Event{
+				Type:    domain.EvClueRevealed,
+				PhaseID: phaseID,
+				SeatID:  target.ID,
+				RoleID:  target.RoleID,
+				ClueID:  id,
+				Text:    fmt.Sprintf("被迫公开的线索【%s】：%s", c.Title, c.Content),
+				Meta:    map[string]string{"title": c.Title, "content": c.Content},
+			})
+			a.unlockKeywordsLocked(c.Title + " " + c.Content)
+			continue
+		}
+		a.appendLocked(domain.Event{
+			Type:       domain.EvClueFound,
+			PhaseID:    phaseID,
+			SeatID:     target.ID,
+			RoleID:     target.RoleID,
+			ClueID:     id,
+			Visibility: PairVisibility(caster.ID, target.ID),
+			Text:       fmt.Sprintf("%s 向你展示了线索【%s】：%s", a.speakerLocked(target), c.Title, c.Content),
+			Meta:       map[string]string{"title": c.Title, "content": c.Content},
+		})
+	}
 }
 
 // ---- discussion phase ----
@@ -1624,6 +2654,113 @@ func (a *Actor) logLeak(seat domain.Seat, hit, text string) {
 
 // ---- vote phase ----
 
+// settleFavorLocked publishes every balance and works out who wears the crown
+// afterwards. K12「水落石出」: 如果皇后不是恩宠值最高的，则被废后、打入冷宫，
+// 最高者继后；否则恩宠值最低的人被打入冷宫。 Callers hold mu.
+func (a *Actor) settleFavorLocked(ph *domain.Phase) {
+	a.pointsOpen = true
+	type entry struct {
+		seat domain.Seat
+		pts  int
+	}
+	var list []entry
+	for _, s := range a.g.Seats {
+		if s.Kind == domain.SeatSpectator {
+			continue
+		}
+		list = append(list, entry{s, a.g.Points[s.ID]})
+	}
+	if len(list) == 0 {
+		return
+	}
+	sort.SliceStable(list, func(i, j int) bool { return list[i].pts > list[j].pts })
+	board := make([]string, 0, len(list))
+	for _, it := range list {
+		board = append(board, fmt.Sprintf("%s %d", a.speakerLocked(it.seat), it.pts))
+	}
+	a.appendLocked(domain.Event{Type: domain.EvSystem, PhaseID: ph.ID, Text: "恩宠值公布：" + strings.Join(board, "，")})
+	if ph.ThroneRoleID == "" {
+		return
+	}
+	var throne *entry
+	for i := range list {
+		if list[i].seat.RoleID == ph.ThroneRoleID {
+			throne = &list[i]
+			break
+		}
+	}
+	if throne == nil {
+		return
+	}
+	top := list[0]
+	lowest := list[len(list)-1]
+	var verdict string
+	switch {
+	case top.seat.RoleID != ph.ThroneRoleID:
+		verdict = fmt.Sprintf("结果：%s 的恩宠值最高，%s 被废后、打入冷宫，后位由 %s 继承。",
+			a.speakerLocked(top.seat), a.speakerLocked(throne.seat), a.speakerLocked(top.seat))
+	case len(list) > 1:
+		verdict = fmt.Sprintf("结果：%s 仍是后位，恩宠值最低的 %s 被打入冷宫。",
+			a.speakerLocked(throne.seat), a.speakerLocked(lowest.seat))
+	default:
+		verdict = fmt.Sprintf("结果：%s 仍是后位。", a.speakerLocked(throne.seat))
+	}
+	a.appendLocked(domain.Event{Type: domain.EvSystem, PhaseID: ph.ID, Text: verdict})
+}
+
+// votePromptFor is the printed question this vote asks.
+func (a *Actor) votePromptFor(ph *domain.Phase) string {
+	if ph != nil && strings.TrimSpace(ph.VotePrompt) != "" {
+		return ph.VotePrompt
+	}
+	return "投票阶段：请选择你认为是凶手的角色"
+}
+
+// applyVoteEffect moves points after a tally: the most-voted role takes the
+// damage or the reward the phase prints (K12 定罪扣恩宠值 / 侍寝加恩宠值).
+// Callers hold mu.
+func (a *Actor) applyVoteEffectLocked(ph *domain.Phase) {
+	if ph == nil || (ph.Penalty == 0 && ph.Reward == 0) || len(a.g.Points) == 0 {
+		return
+	}
+	counts := tally(a.g.Votes)
+	best, bestN := "", 0
+	for role, n := range counts {
+		if role == "" || n <= bestN {
+			continue
+		}
+		best, bestN = role, n
+	}
+	if best == "" {
+		return
+	}
+	var target *domain.Seat
+	for i := range a.g.Seats {
+		if a.g.Seats[i].RoleID == best {
+			target = &a.g.Seats[i]
+			break
+		}
+	}
+	if target == nil {
+		return
+	}
+	name := a.speakerLocked(*target)
+	label := a.pointsLabel()
+	switch {
+	case ph.Penalty > 0:
+		a.g.Points[target.ID] -= ph.Penalty
+		if a.g.Points[target.ID] < 0 {
+			a.g.Points[target.ID] = 0
+		}
+		a.appendLocked(domain.Event{Type: domain.EvSystem, PhaseID: ph.ID,
+			Text: fmt.Sprintf("%s 被定罪（%d 票），扣除 %d 点%s，现为 %d", name, bestN, ph.Penalty, label, a.g.Points[target.ID])})
+	case ph.Reward > 0:
+		a.g.Points[target.ID] += ph.Reward
+		a.appendLocked(domain.Event{Type: domain.EvSystem, PhaseID: ph.ID,
+			Text: fmt.Sprintf("%s 得 %d 票，获得 %d 点%s，现为 %d", name, bestN, ph.Reward, label, a.g.Points[target.ID])})
+	}
+}
+
 func (a *Actor) runVote(ctx context.Context, gen int) {
 	a.mu.Lock()
 	ph := a.m.Current(a.g)
@@ -1645,6 +2782,10 @@ func (a *Actor) runVote(ctx context.Context, gen int) {
 		}
 	}
 	a.tallyVotes()
+	a.mu.Lock()
+	a.applyVoteEffectLocked(ph)
+	a.persistLocked()
+	a.mu.Unlock()
 	a.completePhase(ctx, gen)
 }
 
@@ -1656,7 +2797,7 @@ func (a *Actor) awaitVote(ctx context.Context, gen int, seat domain.Seat) bool {
 	}
 	ch := make(chan ClientMessage, 1)
 	a.waiters[seat.ID] = ch
-	a.appendLocked(domain.Event{Type: domain.EvSystem, SeatID: seat.ID, Visibility: SeatVisibility(seat.ID), Text: "投票阶段：请选择你认为是凶手的角色"})
+	a.appendLocked(domain.Event{Type: domain.EvSystem, SeatID: seat.ID, Visibility: SeatVisibility(seat.ID), Text: a.votePromptFor(a.m.Current(a.g))})
 	a.persistLocked()
 	a.mu.Unlock()
 
@@ -1706,12 +2847,13 @@ func (a *Actor) agentVote(ctx context.Context, gen int, seat domain.Seat) {
 	}
 	v := VisibleFor(a.g, a.sc, &seat, VisibleOptions{MaxTranscript: 40})
 	p := a.personas[seat.ID]
+	question := a.votePromptFor(a.m.Current(a.g))
 	a.mu.Unlock()
 
 	a.thinking(seat, "start")
 	defer a.thinking(seat, "stop")
 
-	instruction := "投票阶段。请只输出一个 JSON 对象：{\"vote\":\"<角色名>\",\"reason\":\"<一句话理由>\"}。vote 必须是你怀疑的角色名，不能是自己。"
+	instruction := question + "。请只输出一个 JSON 对象：{\"vote\":\"<角色名>\",\"reason\":\"<一句话理由>\"}。vote 必须是本题指向的角色名，不能是自己。"
 	req := a.pb.BuildVote(PromptInput{Visible: v, Persona: p, Instruction: instruction})
 	text, _, err := a.generate(ctx, gen, seat, req)
 	if err != nil {
@@ -1820,15 +2962,20 @@ func (a *Actor) runReveal() {
 	defer a.mu.Unlock()
 	idx := a.sc.Tokenize()
 	killer := a.sc.Truth.KillerRoleID
-	killerName := killer
-	if r := idx.RoleByID(killer); r != nil {
-		killerName = r.Name
-	}
 	summary := a.sc.Truth.Summary
 	if summary == "" {
 		summary = a.sc.Truth.Method
 	}
-	text := fmt.Sprintf("真相揭晓：凶手是 %s。%s", killerName, summary)
+	// 空 killerRoleId 表示真凶不是在场玩家（K18 的食堂帮工阿飞）。此时真相
+	// 只能由 summary 交代，不能再拼一句「凶手是 」。
+	text := "真相揭晓：" + summary
+	if killer != "" {
+		killerName := killer
+		if r := idx.RoleByID(killer); r != nil {
+			killerName = r.Name
+		}
+		text = fmt.Sprintf("真相揭晓：凶手是 %s。%s", killerName, summary)
+	}
 	a.appendLocked(domain.Event{
 		Type: domain.EvReveal,
 		Text: text,
@@ -1873,6 +3020,11 @@ func (a *Actor) appendSpeechTo(seat domain.Seat, text, replyTo string) {
 }
 
 func (a *Actor) speakerLocked(seat domain.Seat) string {
+	// A card game keeps the assignment secret: the transcript may say「3 号位」
+	// but never「甄会导」until the reveal.
+	if HiddenIdentities(a.g, a.sc) {
+		return seat.DisplayName
+	}
 	if r := a.sc.Tokenize().RoleByID(seat.RoleID); r != nil {
 		return r.Name
 	}
@@ -1887,11 +3039,17 @@ func (a *Actor) notify(seat domain.Seat, text string) {
 }
 
 func (a *Actor) appendLocked(ev domain.Event) domain.Event {
-	ev = a.g.AppendEvent(ev)
+	stored := a.g.AppendEvent(ev)
 	if a.hub != nil {
-		a.hub.Publish(ev)
+		// 卡牌本在翻真相前不广播 roleId：积分卡要让玩家自己认人，而
+		// seats[] 里已经清过一次，事件里再带一份就把答案送出去了。存的副本保留，
+		// 复盘阶段仍能还原。
+		if HiddenIdentities(a.g, a.sc) {
+			stored.RoleID = ""
+		}
+		a.hub.Publish(stored)
 	}
-	return ev
+	return stored
 }
 
 func (a *Actor) publishDelta(gen int, seat domain.Seat, delta string) {

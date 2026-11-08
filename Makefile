@@ -20,6 +20,12 @@ test:
 check-scripts:
 	cd $(SERVER_DIR) && go run ./cmd/scriptcheck ../scripts/*/script.json
 
+## check-assets: 逐条核对正文里的 /script-assets 引用在磁盘上存在
+## 与 check-scripts 同一条命令：图片缺失和 /story 旧路径都会让校验失败，
+## 单独留这个目标是为了部署前能只跑图片这一关。
+check-assets:
+	cd $(SERVER_DIR) && go run ./cmd/scriptcheck ../scripts/*/script.json
+
 ## run: 本地启动后端（mock provider，8080）
 run:
 	cd $(SERVER_DIR) && SP_LLM_PROVIDER=$${SP_LLM_PROVIDER:-mock} SP_WEB_DIR=$${SP_WEB_DIR:-../web/dist} go run ./cmd/server
@@ -61,4 +67,4 @@ voices:
 fmt:
 	cd $(SERVER_DIR) && gofmt -w ./cmd ./internal
 
-.PHONY: help server test check-scripts run dev-server web-install web-dev web-check web-build web-publish voices fmt
+.PHONY: help server test check-scripts check-assets run dev-server web-install web-dev web-check web-build web-publish voices fmt

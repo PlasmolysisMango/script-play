@@ -5,159 +5,731 @@
   "description": "script-play 的标准剧本格式。truth 只对主持人/复盘可见，private 只对该角色可见。",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "meta", "truth", "phases", "roles", "clues"],
+  "required": [
+    "schemaVersion",
+    "meta",
+    "truth",
+    "phases",
+    "roles",
+    "clues"
+  ],
   "properties": {
-    "schemaVersion": { "const": 1 },
-    "meta": { "$ref": "#/$defs/meta" },
-    "truth": { "$ref": "#/$defs/truth" },
-    "phases": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/phase" } },
-    "roles": { "type": "array", "minItems": 2, "items": { "$ref": "#/$defs/role" } },
-    "clues": { "type": "array", "items": { "$ref": "#/$defs/clue" } },
-    "facts": { "type": "array", "items": { "$ref": "#/$defs/fact" } }
+    "schemaVersion": {
+      "const": 1
+    },
+    "meta": {
+      "$ref": "#/$defs/meta"
+    },
+    "truth": {
+      "$ref": "#/$defs/truth"
+    },
+    "phases": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/phase"
+      }
+    },
+    "roles": {
+      "type": "array",
+      "minItems": 2,
+      "items": {
+        "$ref": "#/$defs/role"
+      }
+    },
+    "clues": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/clue"
+      }
+    },
+    "facts": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/fact"
+      }
+    },
+    "mode": {
+      "enum": [
+        "",
+        "cardgame"
+      ],
+      "description": "剧本形态：空 = 角色本（读本/搜证/讨论/投票）；cardgame = 手牌 + 出牌 + 积分卡，用到 play / score 阶段。"
+    },
+    "cardGame": {
+      "$ref": "#/$defs/cardGame"
+    }
   },
   "$defs": {
     "meta": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["title", "playerCount"],
+      "required": [
+        "title",
+        "playerCount"
+      ],
       "properties": {
-        "title": { "type": "string", "minLength": 1 },
-        "author": { "type": "string" },
-        "summary": { "type": "string" },
-        "difficulty": { "enum": ["easy", "medium", "hard", ""] },
-        "tags": { "type": "array", "items": { "type": "string" } },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "author": {
+          "type": "string"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "difficulty": {
+          "enum": [
+            "easy",
+            "medium",
+            "hard",
+            ""
+          ]
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
         "playerCount": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["min", "max"],
+          "required": [
+            "min",
+            "max"
+          ],
           "properties": {
-            "min": { "type": "integer", "minimum": 2 },
-            "max": { "type": "integer", "minimum": 2 }
+            "min": {
+              "type": "integer",
+              "minimum": 2
+            },
+            "max": {
+              "type": "integer",
+              "minimum": 2
+            }
           }
         },
-        "durationMin": { "type": "integer", "minimum": 0 }
+        "durationMin": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "startPoints": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "每位玩家开局拥有的行动点（K6：11 根仙骨）。为 0 表示本剧本没有行动点。"
+        },
+        "pointsLabel": {
+          "type": "string",
+          "description": "行动点在界面上的叫法（如「仙骨」）；留空时读作「行动点」。"
+        },
+        "hidePoints": {
+          "type": "boolean",
+          "description": "隐藏各宫余额：为 true 时只有本人看得到自己的分数，到 settleFavor 阶段才公开（K12「初始圣宠值第一阶段结束前请勿暴露」）。默认 false，即分数与 K6 一样亮在桌面上。"
+        }
       }
     },
     "truth": {
       "type": "object",
       "description": "案件真相。永不进入任何角色 prompt。",
       "additionalProperties": false,
-      "required": ["killerRoleId"],
+      "required": [
+        "killerRoleId"
+      ],
       "properties": {
-        "killerRoleId": { "type": "string" },
-        "method": { "type": "string" },
-        "motive": { "type": "string" },
-        "timeline": { "type": "array", "items": { "type": "string" } },
-        "summary": { "type": "string" }
+        "killerRoleId": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string"
+        },
+        "motive": {
+          "type": "string"
+        },
+        "timeline": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "summary": {
+          "type": "string"
+        }
       }
     },
     "phase": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "type", "name"],
+      "required": [
+        "id",
+        "type",
+        "name"
+      ],
       "properties": {
-        "id": { "type": "string" },
-        "type": { "enum": ["reading", "opening", "search", "discussion", "vote", "reveal"] },
-        "name": { "type": "string" },
-        "round": { "type": "integer", "minimum": 0 },
-        "dmScript": { "type": "string" },
-        "cluePool": { "type": "array", "items": { "type": "string" } },
-        "perPlayerPick": { "type": "integer", "minimum": 1 },
-        "speechPerPlayer": { "type": "integer", "minimum": 1 },
+        "id": {
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "reading",
+            "opening",
+            "search",
+            "play",
+            "score",
+            "discussion",
+            "vote",
+            "reveal"
+          ],
+          "description": "阶段类型。play / score 只用于 mode=cardgame 的剧本。"
+        },
+        "name": {
+          "type": "string"
+        },
+        "round": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "dmScript": {
+          "type": "string"
+        },
+        "cluePool": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "perPlayerPick": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "speechPerPlayer": {
+          "type": "integer",
+          "minimum": 1
+        },
         "searchMode": {
-          "enum": ["pick", "random", ""],
+          "enum": [
+            "pick",
+            "random",
+            ""
+          ],
           "description": "搜证方式：pick 由玩家自选，random 由玩家点「随机抽取」逐条抽（隐藏线索标题）。"
         },
         "order": {
-          "enum": ["round_robin", "random", "host_assigned", ""],
-          "description": "行动顺序：round_robin 按入座轮流，random 阶段开始时打乱一次，host_assigned 由主持人一次性排好整轮。"
+          "enum": [
+            "round_robin",
+            "random",
+            "host_assigned",
+            "fixed",
+            "favor",
+            ""
+          ],
+          "description": "行动顺序：round_robin 按入座轮流，random 阶段开始时打乱一次，host_assigned 由主持人一次性排好整轮，fixed 照 orderRoleIds 里印死的顺序，favor 按当前行动点（恩宠值）从高到低。"
         },
-        "timeoutSec": { "type": "integer", "minimum": 0 },
+        "timeoutSec": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "onlyRoleIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "限定本阶段只由这些角色行动（搜证阶段即只有他们能抽卡，其余座位不占回合）。例：只让黑猫抽「查理的记忆」，或三位巫师里排除某一位。"
+        },
         "revealOnFind": {
           "type": "boolean",
           "description": "搜证公开：本轮抽到的线索立即对全场公开，不必玩家再点「公开」。适用于「本轮调查到的线索均为公开线索」的剧本；默认 false（只可转述）。"
+        },
+        "draws": {
+          "type": "array",
+          "description": "分类抽卡：按顺序从这些卡类里各抽几张，取代 cluePool + perPlayerPick。例：[{\"kind\":\"随身物品\",\"count\":1},{\"kind\":\"轮船线索\",\"count\":3}]。kind 为空表示任意线索。",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "kind",
+              "count"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "description": "线索卡类，与 clues[].kind 对应"
+              },
+              "count": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "这一步抽几张"
+              }
+            }
+          }
+        },
+        "drawCost": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "抽一张卡要花多少行动点（K6：1 根仙骨）。只在 meta.startPoints 非 0 时有意义。"
+        },
+        "orderRoleIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "order=fixed 时照印的行动顺序（角色 id）；没列到的角色本阶段不行动。"
+        },
+        "privateClues": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "专属线索：阶段开始时直接交到主人手里的卡（K10 曲径通幽 06-10「××专属线索」），不进牌堆。"
+        },
+        "votePrompt": {
+          "type": "string",
+          "description": "本阶段投票要问的那一句话；留空读作「请选择你认为是凶手的角色」（K12 三具尸体各问一遍）。"
+        },
+        "penalty": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "计票后扣分：得票最高的角色扣这么多点（K12「一旦定罪，扣除恩宠值 5 点」）。"
+        },
+        "reward": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "计票后加分：得票最高的角色加这么多点（K12「翻牌侍寝」+5）。"
+        },
+        "pickByRank": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "description": "按名次分配搜证次数：本阶段顺序里第一位抽 pickByRank[0] 张，第二位抽 pickByRank[1] 张，以此类推，超出长度的按最后一位的数值（K12 初次搜证 9/8/7/6 按恩宠值从高到低）。"
+        },
+        "settleFavor": {
+          "type": "boolean",
+          "description": "本阶段结算恩宠值：公布所有余额，算出废后与打入冷宫的人（K12「水落石出」）。"
+        },
+        "throneRoleId": {
+          "type": "string",
+          "description": "后位角色：settleFavor 阶段据此判断皇后是否被废（K12 皇后）。"
+        }
+      }
+    },
+    "skill": {
+      "type": "object",
+      "description": "角色的特殊技能（K6：每位仙主一个，消耗仙骨，整局只能发动一次）。引擎能自己结算的只有列出的四种 effect，其余写在 text 里由桌面结算。",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "text",
+        "effect"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "text": {
+          "type": "string",
+          "description": "稿面原文，界面上原样排出。"
+        },
+        "effect": {
+          "enum": [
+            "steal_draws",
+            "burn_points",
+            "show_clues",
+            "grant_points"
+          ],
+          "description": "steal_draws 抢目标的抽卡权；burn_points 把目标的行动点归零；show_clues 让目标展示线索卡；grant_points 给目标补行动点。"
+        },
+        "cost": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "exactCost": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "只有当自己正好剩这么多行动点时才能发动（与 allCost 互斥）。"
+        },
+        "allCost": {
+          "type": "boolean",
+          "description": "烧掉自己剩余的全部行动点。"
+        },
+        "target": {
+          "enum": [
+            "other",
+            "next",
+            ""
+          ],
+          "description": "other 自己挑一道友，next 自动指向本阶段顺序里的下一名，空则不选人。"
+        },
+        "targetRoleId": {
+          "type": "string",
+          "description": "效果固定在某个角色身上（不再由玩家选人）。"
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "show_clues 展示几张（0 = 全部）；grant_points 补几点。"
+        },
+        "public": {
+          "type": "boolean",
+          "description": "show_clues 是否向全员展示（默认只给发动者看）。"
         }
       }
     },
     "role": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "name", "public", "private"],
+      "required": [
+        "id",
+        "name",
+        "public",
+        "private"
+      ],
       "properties": {
-        "id": { "type": "string" },
-        "name": { "type": "string", "minLength": 1 },
-        "personaId": { "type": "string" },
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "personaId": {
+          "type": "string"
+        },
+        "skill": {
+          "$ref": "#/$defs/skill"
+        },
         "public": {
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "intro": { "type": "string" },
-            "appearance": { "type": "string" }
+            "intro": {
+              "type": "string"
+            },
+            "appearance": {
+              "type": "string"
+            }
           }
         },
         "private": {
           "type": "object",
           "description": "只对该角色（及其 AI 座位）可见。",
           "additionalProperties": false,
-          "required": ["script"],
+          "required": [
+            "script"
+          ],
           "properties": {
-            "script": { "type": "string", "minLength": 1 },
+            "script": {
+              "type": "string",
+              "minLength": 1
+            },
             "secrets": {
               "type": "array",
               "items": {
                 "type": "object",
                 "additionalProperties": false,
-                "required": ["id", "text", "revealCost"],
+                "required": [
+                  "id",
+                  "text",
+                  "revealCost"
+                ],
                 "properties": {
-                  "id": { "type": "string" },
-                  "text": { "type": "string" },
-                  "revealCost": { "type": "number", "minimum": 0, "maximum": 1 }
+                  "id": {
+                    "type": "string"
+                  },
+                  "text": {
+                    "type": "string"
+                  },
+                  "revealCost": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 1
+                  }
                 }
               }
             },
-            "goals": { "type": "array", "items": { "type": "string" } },
-            "knownFactIds": { "type": "array", "items": { "type": "string" } }
+            "goals": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "knownFactIds": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "keyword": {
+              "type": "string",
+              "description": "角色卡正面印的「你的关键词」，开局读一次，不能给旁人看。"
+            }
           }
+        },
+        "letter": {
+          "type": "string",
+          "maxLength": 2,
+          "description": "角色卡上印的字母（A–E），卡牌本填积分卡时对齐用。"
+        },
+        "floor": {
+          "type": "string",
+          "description": "角色房间所在的楼层（一楼/二楼/三楼）。印在地图上，属于公开信息；搜证规则「不能抽取自己所在楼层」靠它与线索的 floor 对齐。"
+        },
+        "points": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "本角色开局拥有的行动点。给了就压过 meta.startPoints，用在不同角色起手分数不一样的剧本（K12 各宫的初始圣宠值）。"
         }
       }
     },
     "clue": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "title", "content"],
+      "required": [
+        "id",
+        "title",
+        "content"
+      ],
       "properties": {
-        "id": { "type": "string" },
-        "title": { "type": "string", "minLength": 1 },
-        "location": { "type": "string" },
-        "back": { "type": "string", "description": "实体线索卡背面的字（地点＋编号，如「船长 07」）。搜证选项只下发这一行，不含 title 与 content。" },
-        "content": { "type": "string" },
-        "ownerRoleId": { "type": "string", "description": "私人物品：只有该角色初始可见，且只能由该角色搜到。" },
-        "subjectRoleId": { "type": "string", "description": "搜身线索：这条线索说谁。该角色本人不能抽到它，其他人照常可搜（与 ownerRoleId 相反：卡在公共池里）。" },
-        "mustReveal": { "type": "boolean", "description": "本线索必须公开：卡面写「本条线索必须公开」时置 true。搜到即向全场公开，不受所在搜证阶段的 revealOnFind 影响。" },
-        "grantsItem": { "type": "string", "description": "搜到即获得的物品（如「钳子」），进入该座位的物品栏。" },
-        "requiresItems": { "type": "array", "items": { "type": "string" }, "description": "持有这些物品才能搜到本条（深入调查的门槛）。" },
-        "unlockedBy": { "type": "array", "items": { "type": "string" }, "description": "必须先搜到（或公开）这些线索，本条才会出现在搜证列表里。" },
-        "keywords": { "type": "array", "items": { "type": "string" }, "description": "关键词：配合 ownerRoleId 使用。有人当众说出（或在公开线索里出现）其中一个词时，该角色获得这条私密线索；在此之前连持有者自己也看不到。" },
-        "isPublic": { "type": "boolean", "description": "true 表示开局即公共线索。" },
-        "imageUrl": { "type": "string" },
+        "id": {
+          "type": "string"
+        },
+        "number": {
+          "type": "string",
+          "description": "卡面右上角的线索编号（青萍之末 18、曲径通幽 02）。只用于卡背提示与「点名称取」的对应关系。"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "location": {
+          "type": "string"
+        },
+        "back": {
+          "type": "string",
+          "description": "实体线索卡背面的字（地点＋编号，如「船长 07」）。搜证选项只下发这一行，不含 title 与 content。"
+        },
+        "content": {
+          "type": "string"
+        },
+        "ownerRoleId": {
+          "type": "string",
+          "description": "私人物品：只有该角色初始可见，且只能由该角色搜到。"
+        },
+        "subjectRoleId": {
+          "type": "string",
+          "description": "搜身线索：这条线索说谁。该角色本人不能抽到它，其他人照常可搜（与 ownerRoleId 相反：卡在公共池里）。"
+        },
+        "extraDraw": {
+          "type": "boolean",
+          "description": "卡面「获得这张线索的巫师，可以抽取一张额外的线索」：抽到这张的座位在本轮多一次抽卡。"
+        },
+        "grantsClue": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "卡面「可获得曲径通幽 N」：抽到这张的座位可以点名称取指定的深入调查线索，那几条不必在本阶段的 cluePool 里，也不受本轮张数限制（仍要满足 requiresItems 与 unlockedBy）。",
+          "uniqueItems": true
+        },
+        "mustReveal": {
+          "type": "boolean",
+          "description": "本线索必须公开：卡面写「本条线索必须公开」时置 true。搜到即向全场公开，不受所在搜证阶段的 revealOnFind 影响。"
+        },
+        "grantsItem": {
+          "type": "string",
+          "description": "搜到即获得的物品（如「钳子」），进入该座位的物品栏。"
+        },
+        "requiresItems": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "持有这些物品才能搜到本条（深入调查的门槛）。"
+        },
+        "unlockedBy": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "必须先搜到（或公开）这些线索，本条才会出现在搜证列表里。"
+        },
+        "keywords": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "关键词：配合 ownerRoleId 使用。有人当众说出（或在公开线索里出现）其中一个词时，该角色获得这条私密线索；在此之前连持有者自己也看不到。"
+        },
+        "keywordsAll": {
+          "type": "boolean",
+          "description": "多个关键词是否要全部听齐才解锁（《后天魔之谜》的「说到红烟深处和亡青叶这两个词」）。默认 false：命中任一即可。"
+        },
+        "isPublic": {
+          "type": "boolean",
+          "description": "true 表示开局即公共线索。"
+        },
+        "imageUrl": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "description": "卡类：卡面印的分类（「随身物品」「轮船线索」「尸体线索」）。阶段用 draws 按类抽卡时靠它配对；不分类的剧本留空。"
+        },
         "links": {
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "roles": { "type": "array", "items": { "type": "string" } },
-            "secrets": { "type": "array", "items": { "type": "string" } },
-            "facts": { "type": "array", "items": { "type": "string" } }
+            "roles": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "secrets": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "facts": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
           }
+        },
+        "floor": {
+          "type": "string",
+          "description": "这张线索卡所属的楼层（一楼/二楼/三楼）。与角色 floor 相同的座位不能抽取它；不属任何楼层的卡留空。"
         }
       }
     },
     "fact": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "text"],
+      "required": [
+        "id",
+        "text"
+      ],
       "properties": {
-        "id": { "type": "string" },
-        "text": { "type": "string", "minLength": 1 }
+        "id": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "card": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "clue",
+            "stop",
+            "recolor",
+            "inspect",
+            "stall",
+            "swap"
+          ],
+          "description": "clue 线索牌；stop 天黑请停止搜索；recolor 线索中断；inspect 调查身份；stall 陷入僵局；swap 交换线索。"
+        },
+        "color": {
+          "type": "string",
+          "description": "线索牌与功能牌的颜色（现场/试探身份/新闻报道/路人证言/短信记录）。技能牌不带颜色。"
+        },
+        "number": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10
+        },
+        "title": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "first": {
+          "type": "boolean",
+          "description": "印着「此牌最先出」的那一张：发到谁手上，谁先出牌。"
+        }
+      }
+    },
+    "cardWord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "roleId",
+        "word"
+      ],
+      "properties": {
+        "roleId": {
+          "type": "string"
+        },
+        "word": {
+          "type": "string",
+          "minLength": 1
+        },
+        "open": {
+          "type": "boolean",
+          "description": "卡面写「需要公开」的未知词，翻开后全场可见。"
+        }
+      }
+    },
+    "cardGame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cards"
+      ],
+      "properties": {
+        "deal": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "每人发几张；0 = 牌堆平均分。"
+        },
+        "points": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          },
+          "description": "名次分：第一名、第二名……"
+        },
+        "killerRank": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "凶手排进前几名算赢（3 = 前三名）。"
+        },
+        "cards": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/card"
+          },
+          "minItems": 1
+        },
+        "words": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/cardWord"
+          }
+        }
       }
     }
   }

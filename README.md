@@ -312,7 +312,9 @@ nginx -t && systemctl reload nginx
 - `/api/` 的 `proxy_read_timeout` 必须大于 `SP_AGENT_TIMEOUT_SEC`（默认 180s），否则长生成中途被切断；
 - `/ws/` 必须显式透传 `Upgrade` / `Connection`，否则握手永远 400；
 - `/assets/*` 缺失要 404，不能回落 `index.html`，否则浏览器把 HTML 当 JS 执行、报 MIME 错白屏；
-- `client_max_body_size` 要 ≥ `SP_MAX_UPLOAD_MB`（默认 64m）。
+- `client_max_body_size` 要 ≥ 2 × `SP_MAX_UPLOAD_MB`（默认 256，即 `512m`）：单文件有一个上限，
+  一次请求（一个游戏文件夹里好几个 PDF）有另一个，比后端小的话请求根本到不了 Go，
+  浏览器只能收到 nginx 自己的 HTML 413。
 
 本地开发仍是单进程：`make run`（Go 8080，带 `SP_WEB_DIR`）配 `make web-dev`（5173，代理 `/api`、
 `/ws`、`/media`、`/script-assets`）。`SP_WEB_DIR` 只服务于这个场景，生产由 nginx 发前端。
@@ -351,7 +353,7 @@ prompt 走 stdin。`--tools=` 必须显式关闭，否则子进程会在工作�
 | `SP_FLOOR_TIMEOUT_SEC` | `90` | 真人**每次轮到**发言/搜证/投票的默认等待上限（轮与轮各自重新计时）；建房时用 `speechSeconds` 按房间覆盖，`-1` 表示不限时 |
 | `SP_AGENT_TIMEOUT_SEC` | `90` | 单次 Agent 生成上限 |
 | `SP_MAX_ROOMS` | `2` | 同时进行的对局数 |
-| `SP_MAX_UPLOAD_MB` | `64` | 单个原件上传上限（MB） |
+| `SP_MAX_UPLOAD_MB` | `256` | 单个原件上传上限（MB）；一次请求最多 2 倍，`client_max_body_size` 需同步放大 |
 
 ## 信息隔离怎么保证
 

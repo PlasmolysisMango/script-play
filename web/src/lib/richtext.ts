@@ -31,13 +31,21 @@ export type RichBlock =
   | { kind: 'ul'; items: Inline[][] }
   | { kind: 'ol'; items: Inline[][]; start: number }
   | { kind: 'quote'; parts: Inline[] }
+  | { kind: 'table'; head: Inline[][]; rows: Inline[][][] }
   | { kind: 'p'; parts: Inline[] }
 
-const TIME_LINE = /^\*\*((?:\d{1,2}月\d{1,2}日\s*)?\d{1,2}[:：]\d{2})\*\*\s*(.*)$/
+// Printed books stamp a day either as "9月8日18:15" or as "早上 10：00"; both
+// are one timeline row, and the period word is part of the label the reader
+// scans for, so it stays inside the chip.
+const TIME_LINE = /^\*\*((?:(?:凌晨|清晨|早上|上午|中午|下午|傍晚|晚上|夜里|半夜)\s*)?(?:\d{1,2}月\d{1,2}日\s*)?\d{1,2}[:：]\d{2})\*\*\s*(.*)$/
 const IMAGE_LINE = /^!\[([^\]]*)\]\(\s*([^)\s]+)\s*\)$/
 const BULLET_LINE = /^[-*+]\s+(.*)$/
 const ORDERED_LINE = /^(\d{1,2})[.)]\s+(.*)$/
 const QUOTE_LINE = /^>\s?(.*)$/
+// Character profiles are printed as a four-cell grid (`| 性别 | 年龄 | 身高 | 体重 |`).
+// A pipe line only becomes a table when a `| --- |` rule follows it; otherwise it
+// stays prose, the same rule the rest of this parser follows.
+const TABLE_LINE = /^\|.*\|$/
 
 /** Bold, then inline code / links / italic inside each run. */
 const EMPHASIS = /`([^`]+)`|\[([^\]]+)\]\(([^)\s]+)\)|\*([^*\n]+)\*|_([^_\n]+)_/g
@@ -110,6 +118,7 @@ export function parseRichText(source: string): RichBlock[] {
   let quote: string[] = []
   let list: { ordered: boolean; start: number; items: string[] } | null = null
   let fence: { lang: string; lines: string[] } | null = null
+  let table: string[] = []
 
   const flushPara = () => {
     if (para.length === 0) return
@@ -127,11 +136,33 @@ export function parseRichText(source: string): RichBlock[] {
     blocks.push(list.ordered ? { kind: 'ol', start: list.start, items } : { kind: 'ul', items })
     list = null
   }
+  const flushTable = () => {
+    if (table.length === 0) return
+    const lines = table
+    table = []
+    // Header + rule + body. No rule means the pipes were just prose.
+    const separator = lines.length >= 2 && lines[1].split('|').every((cell) => {
+      const c = cell.trim()
+      return c === '' || /^:?-{2,}:?$/.test(c)
+    })
+    if (!separator) {
+      blocks.push({ kind: 'p', parts: parseInline(lines.join('\n')) })
+      return
+    }
+    const cells = (line: string) =>
+      line.replace(/^\|/, '').replace(/\|$/, '').split('|').map((cell) => cell.trim())
+    blocks.push({
+      kind: 'table',
+      head: cells(lines[0]).map((cell) => parseInline(cell)),
+      rows: lines.slice(2).map((line) => cells(line).map((cell) => parseInline(cell))),
+    })
+  }
   // A heading, rule or picture ends whatever container is open.
   const cut = () => {
     flushPara()
     flushList()
     flushQuote()
+    flushTable()
   }
 
   for (const raw of lines) {
@@ -150,6 +181,7 @@ export function parseRichText(source: string): RichBlock[] {
       flushPara()
       flushList()
       flushQuote()
+      flushTable()
       continue
     }
     if (line.startsWith('```')) {
@@ -182,6 +214,13 @@ export function parseRichText(source: string): RichBlock[] {
     if (time) {
       cut()
       blocks.push({ kind: 'time', time: stamp(time[1]), parts: parseInline(time[2]) })
+      continue
+    }
+    if (TABLE_LINE.test(line)) {
+      flushPara()
+      flushList()
+      flushQuote()
+      table.push(line)
       continue
     }
     const quoted = QUOTE_LINE.exec(line)

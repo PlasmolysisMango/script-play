@@ -81,14 +81,16 @@ export function ReadingPage({ role, onClose }: { role: OwnRole; onClose: () => v
                           one picture players actually study. It loads eagerly: a
                           lazy image collapsed to a 2px frame while the phone was
                           still fetching it, which reads as "the picture is
-                          broken". Height is capped in `svh` (the small viewport)
-                          so the browser's own bars cannot push the bottom off
-                          screen, and the picture is never wider than the column. */}
+                          broken". It takes the full column width and grows to its
+                          natural height — an earlier `max-h-[70svh]` squeezed a
+                          1435×2252 map down to a ~400px-wide thumbnail, which
+                          reads as "the map is cut in half". The column already
+                          scrolls, so nothing needs to fit one screen. */}
                       <img
                         src={b.src}
                         alt={b.alt}
                         decoding="async"
-                        className="mx-auto block h-auto max-h-[70svh] min-h-24 w-auto max-w-full rounded-xl border border-line/60 bg-panel object-contain"
+                        className="mx-auto block h-auto w-full rounded-xl border border-line/60 bg-panel"
                       />
                     </a>
                     <figcaption className="mt-2 text-center text-xs text-slate-500">
@@ -120,6 +122,36 @@ export function ReadingPage({ role, onClose }: { role: OwnRole; onClose: () => v
                   <blockquote key={i} className="border-l-2 border-line pl-3 text-slate-400">
                     <InlineRuns parts={b.parts} />
                   </blockquote>
+                )
+              }
+              // Character profiles print as a four-cell grid. Keep it a table:
+              // reading 「性别 / 年龄 / 身高 / 体重」 as a run-on sentence loses the shape.
+              if (b.kind === 'table') {
+                return (
+                  <div key={i} className="overflow-x-auto">
+                    <table className="w-full border-collapse text-sm">
+                      <thead>
+                        <tr>
+                          {b.head.map((cell, j) => (
+                            <th key={j} className="border-b border-line px-2 py-1 text-left font-semibold text-slate-400">
+                              <InlineRuns parts={cell} />
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {b.rows.map((row, j) => (
+                          <tr key={j}>
+                            {row.map((cell, k) => (
+                              <td key={k} className="border-b border-line/60 px-2 py-1">
+                                <InlineRuns parts={cell} />
+                              </td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
                 )
               }
               if (b.kind === 'ul') {

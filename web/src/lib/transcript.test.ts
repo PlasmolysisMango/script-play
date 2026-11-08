@@ -25,7 +25,7 @@ function stateWith(transcript: { seq: number; kind: string; text: string }[]): S
     visible: {
       gameId: 'g1',
       roomId: 'room1',
-      phase: { id: 'p3', type: 'discussion', name: '讨论', round: 1, order: 'round_robin', searchMode: '', revealOnFind: false, perPlayerPick: 0, speechPerPlayer: 1 },
+      phase: { id: 'p3', type: 'discussion', name: '讨论', round: 1, order: 'round_robin', searchMode: '', revealOnFind: false, perPlayerPick: 0, speechPerPlayer: 1, draws: [] },
       phaseIndex: 2,
       round: 1,
       self: { id: 'seat1', roleId: 'r1', roleName: '沈曼丽', displayName: '我', kind: 'human', isHost: true, connected: true, ready: true },
@@ -35,6 +35,7 @@ function stateWith(transcript: { seq: number; kind: string; text: string }[]): S
       ownFacts: [],
       items: [],
       transcript: transcript.map((l) => ({ seq: l.seq, kind: l.kind, text: l.text, at: '', seatId: '', roleId: '', speaker: '' })),
+      cardRoles: [],
       seats: [],
     },
     phases: [],
@@ -44,6 +45,11 @@ function stateWith(transcript: { seq: number; kind: string; text: string }[]): S
     draw: 0,
     talkOpen: false,
     queue: [],
+    hand: [],
+    scoreDone: false,
+    points: 0,
+    pointsLabel: '',
+    tablePoints: {},
   } as SeatState
 }
 

@@ -30,6 +30,29 @@ const (
 	// OrderHostAssigned leaves the order to the host, who lays out the whole
 	// round on one screen before anybody acts.
 	OrderHostAssigned = "host_assigned"
+	// OrderFixed follows the printed running order. K6 lists it in the rules
+	// (涌江 → 北照君 → 流兮 → 失忆少年 → 千秋), so Phase.OrderRoleIDs carries it and
+	// nobody has to retype the sequence at the table.
+	OrderFixed = "fixed"
+	// OrderFavor walks the table by the live point balance, richest first
+	// (K12「按照当前各位娘娘的恩宠值排序，从高到低搜证」). Ties keep the
+	// seating order so a replay reads the same way.
+	OrderFavor = "favor"
+)
+
+// Skill effects the engine can resolve on its own. Anything else belongs in the
+// printed text and is settled at the table.
+const (
+	// SkillStealDraws moves the target's remaining draws this round to the caster
+	// (K6 北照君 「君子如玉」).
+	SkillStealDraws = "steal_draws"
+	// SkillBurnPoints zeroes the target's remaining points (千秋 「随心所欲」).
+	SkillBurnPoints = "burn_points"
+	// SkillShowClues makes the target show clues: Value cards, or all of them when
+	// Value is 0, privately to the caster or to the whole table.
+	SkillShowClues = "show_clues"
+	// SkillGrantPoints hands the target points back (流兮 「情深不寿」).
+	SkillGrantPoints = "grant_points"
 )
 
 // Search modes: how a seat obtains its clues in a search phase.
@@ -50,6 +73,10 @@ type Script struct {
 	Roles         []Role  `json:"roles"`
 	Clues         []Clue  `json:"clues"`
 	Facts         []Fact  `json:"facts,omitempty"`
+	// Mode picks the flow: empty is the classic role-book script, cardgame runs
+	// the hand-of-cards table in CardGame.
+	Mode     string    `json:"mode,omitempty"`
+	CardGame *CardGame `json:"cardGame,omitempty"`
 }
 
 // Meta describes a script for the lobby listing.
@@ -61,6 +88,16 @@ type Meta struct {
 	Tags        []string   `json:"tags,omitempty"`
 	PlayerCount CountRange `json:"playerCount"`
 	DurationMin int        `json:"durationMin,omitempty"`
+	// StartPoints is the action currency every seat begins with. K6 hands each
+	// 仙主 11 根仙骨, spent one per drawn card and a few per skill; a script
+	// without such a currency leaves it zero.
+	StartPoints int `json:"startPoints,omitempty"`
+	// PointsLabel names that currency on screen ("仙骨"); empty reads 行动点.
+	PointsLabel string `json:"pointsLabel,omitempty"`
+	// HidePoints keeps every balance but the seat's own off the table until the
+	// script settles them (K12「初始圣宠值第一阶段结束前请勿暴露」). Without
+	// it the balances are face up, which is what K6 wants.
+	HidePoints bool `json:"hidePoints,omitempty"`
 }
 
 // CountRange is the allowed number of player seats.
@@ -93,20 +130,140 @@ type Phase struct {
 	Order      string `json:"order,omitempty"`
 	SearchMode string `json:"searchMode,omitempty"`
 	TimeoutSec int    `json:"timeoutSec,omitempty"`
+	// OnlyRoleIDs narrows a phase to some of the roles. K5's 「查理的记忆」 is
+	// dealt by the cat alone, and its three search rounds are the printed
+	// "每位巫师抽 N 张" — the cat never searches. Without it the other seats
+	// would be asked for a turn and told there is nothing to draw.
+	OnlyRoleIDs []string `json:"onlyRoleIds,omitempty"`
 	// RevealOnFind opens a search phase: every card is read aloud the moment
 	// it is picked, so the table gets it without the seat pressing "公开".
 	// Public-search scripts ("本轮调查到的线索均为公开线索") set it; scripts
 	// built on "线索只可转述" leave it false, which is the default everywhere.
 	RevealOnFind bool `json:"revealOnFind,omitempty"`
+	// Draws splits one round into typed draws ("随身物品 1 张 + 轮船线索 3 张").
+	// When it is set it replaces both PerPlayerPick and the pool restriction: the
+	// seat draws the listed kinds in order, so the mix a printed rule promises
+	// cannot be gamed by taking four of the good kind. Clue.Kind is what pairs
+	// a card with a draw.
+	Draws []DrawRule `json:"draws,omitempty"`
+	// DrawCost is how many action points one draw spends (K6: 1 根仙骨). It only
+	// means something in a script that sets Meta.StartPoints.
+	DrawCost int `json:"drawCost,omitempty"`
+	// OrderRoleIDs is the printed running order used with Order=OrderFixed. Seats
+	// missing from it simply do not act in that phase.
+	OrderRoleIDs []string `json:"orderRoleIds,omitempty"`
+	// PrivateClues are 「专属线索」: cards handed straight to their owner when
+	// the phase opens (K10 曲径通幽 06-10 print "××专属线索"). They never sit in
+	// a pool, so a random draw can never hand one to the wrong player; the
+	// clue's OwnerRoleID says who receives it.
+	PrivateClues []string `json:"privateClues,omitempty"`
+	// VotePrompt replaces the default "请选择你认为是凶手的角色" line with the
+	// printed question (K12 指着三具尸体各问一遍“谁害死了他”).
+	VotePrompt string `json:"votePrompt,omitempty"`
+	// Penalty and Reward move points after a vote is counted: Penalty hands the
+	// most-voted role that many points of damage (K12「一旦定罪，扣除恩宠值5点」),
+	// Reward pays them instead (「今夜侍寝获得5点恩宠值」). Both need a point
+	// currency; a phase may set either, never both meaningfully.
+	Penalty int `json:"penalty,omitempty"`
+	Reward  int `json:"reward,omitempty"`
+	// PickByRank hands search quotas by place in the running order: the first
+	// seat draws PickByRank[0], the next PickByRank[1], … (K12 初次搜证 9/8/7/6
+	// 按恩宠值从高到低). It wins over PerPlayerPick, and pairs with
+	// Order=OrderFavor.
+	PickByRank []int `json:"pickByRank,omitempty"`
+	// SettleFavor closes a favor race: it publishes every balance, works out who
+	// is deposed and who is sent to the cold palace, and logs the verdict
+	// (K12「水落石出」). It implies Meta.HidePoints until it fires.
+	SettleFavor bool `json:"settleFavor,omitempty"`
+	// ThroneRoleID is the seat that holds the throne in that race (K12 皇后).
+	// A SettleFavor phase needs it to know who can be deposed.
+	ThroneRoleID string `json:"throneRoleId,omitempty"`
+}
+
+// Skill is one printed special ability (K6: 每位仙主一个，消耗仙骨，全程一次).
+// The engine resolves the four effects above; Text stays the printed wording so
+// the seat can read exactly what the card says.
+type Skill struct {
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Text   string `json:"text"`
+	Effect string `json:"effect"`
+	// Cost is the points spent. ExactCost means "only when my points are exactly
+	// this many" (千秋: 6), AllCost means "every point I have left" (涌江).
+	Cost      int  `json:"cost,omitempty"`
+	ExactCost int  `json:"exactCost,omitempty"`
+	AllCost   bool `json:"allCost,omitempty"`
+	// Target is how the caster picks: "other" a seat of its choice, "next" the
+	// next seat in this phase's order (北照君), empty no choice at all.
+	Target string `json:"target,omitempty"`
+	// TargetRoleID pins the effect to one role (流兮 heals only 涌江).
+	TargetRoleID string `json:"targetRoleId,omitempty"`
+	// Value is the effect's parameter: how many cards show_clues reveals.
+	Value int `json:"value,omitempty"`
+	// Public is true when the shown cards go to the whole table (涌江) instead of
+	// only to the caster (失忆少年).
+	Public bool `json:"public,omitempty"`
+}
+
+// DrawRule is one line of a search round: how many cards of one kind a seat
+// takes. An empty Kind means "any card still in the round".
+type DrawRule struct {
+	Kind  string `json:"kind"`
+	Count int    `json:"count"`
+}
+
+// PickLimit is how many search turns one seat owes this phase. Draws win when
+// present because they are the printed rule; PerPlayerPick is the older, flat
+// way of saying the same thing.
+func (p *Phase) PickLimit() int {
+	if len(p.Draws) > 0 {
+		total := 0
+		for _, d := range p.Draws {
+			total += d.Count
+		}
+		if total > 0 {
+			return total
+		}
+	}
+	return p.PerPlayerPick
+}
+
+// DrawPlan expands Draws into the exact sequence of kinds one seat works
+// through, e.g. [随身物品 轮船线索 轮船线索 轮船线索]. The n-th pick's kind is
+// therefore plan[n], which keeps the mix right without any extra bookkeeping.
+func (p *Phase) DrawPlan() []string {
+	if len(p.Draws) == 0 {
+		return nil
+	}
+	var plan []string
+	for _, d := range p.Draws {
+		for i := 0; i < d.Count; i++ {
+			plan = append(plan, d.Kind)
+		}
+	}
+	return plan
 }
 
 // Role is a playable character.
 type Role struct {
-	ID        string      `json:"id"`
-	Name      string      `json:"name"`
-	PersonaID string      `json:"personaId,omitempty"`
-	Public    RolePublic  `json:"public"`
-	Private   RolePrivate `json:"private"`
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	PersonaID string `json:"personaId,omitempty"`
+	// Letter is the printed letter on the role card ("A".."E"). Card games
+	// print it on the box lid next to the name, so it is public.
+	Letter string `json:"letter,omitempty"`
+	// Floor is the storey this role's room sits on ("二楼"). It is printed on
+	// the map, so it is public, and search rounds use it to keep a seat out of
+	// its own storey ("不能抽取自己所在楼层").
+	Floor   string      `json:"floor,omitempty"`
+	Public  RolePublic  `json:"public"`
+	Private RolePrivate `json:"private"`
+	// Points is the balance this role starts with when the script hands out a
+	// different amount per role (K12 每宫的初始圣宠值). Meta.StartPoints is the
+	// flat version; this one wins when it is set.
+	Points int `json:"points,omitempty"`
+	// Skill is the printed special ability, usable once in any search round.
+	Skill *Skill `json:"skill,omitempty"`
 }
 
 // RolePublic is visible to every seat from the start.
@@ -121,6 +278,10 @@ type RolePrivate struct {
 	Secrets      []Secret `json:"secrets,omitempty"`
 	Goals        []string `json:"goals,omitempty"`
 	KnownFactIDs []string `json:"knownFactIds,omitempty"`
+	// Keyword is the one printed word on the role card ("麻烦", "真相", …, on
+	// the card front under 「你的关键词」). A card-game role reads it once at
+	// the start and keeps it secret.
+	Keyword string `json:"keyword,omitempty"`
 }
 
 // Secret is a hidden fact the role may choose to reveal (or not).
@@ -132,8 +293,12 @@ type Secret struct {
 
 // Clue is a searchable piece of evidence.
 type Clue struct {
-	ID       string `json:"id"`
-	Title    string `json:"title"`
+	ID    string `json:"id"`
+	Title string `json:"title"`
+	// Number is the serial printed on the card (青萍之末 18、曲径通幽 02). The
+	// back of a card shows it so a seat can name the exact one it was promised
+	// ("抽到这张，可获取曲径通幽 2").
+	Number   string `json:"number,omitempty"`
 	Location string `json:"location,omitempty"`
 	// Back is the text printed on the back of the physical clue card. The table
 	// reads it while searching, so it names a place ("背后的培养仓") and never
@@ -146,6 +311,21 @@ type Clue struct {
 	// that role, so that role may never draw it. Unlike OwnerRoleID the card
 	// stays in the common pool — everybody else can find it.
 	SubjectRoleID string `json:"subjectRoleId,omitempty"`
+	// Floor is the storey the card was printed for ("一楼"). A seat whose room
+	// is on that storey may not draw it, which is the printed rule
+	// "不能抽取自己所在楼层"; leave it empty on cards outside any storey.
+	Floor string `json:"floor,omitempty"`
+	// ExtraDraw is the printed "获得这张线索的巫师，可以抽取一张额外的线索":
+	// taking the card hands the seat one more pick in the same round. K5's
+	// 玛格丽特的房间 is 15 cards for 12 picks plus exactly three of these.
+	ExtraDraw bool `json:"extraDraw,omitempty"`
+	// GrantsClue names the "深入调查" cards this clue puts in the finder's hand
+	// ("获得这张线索，可开启曲径通幽 N"). They are not part of the round's
+	// pool: the seat that found the parent may claim one of them directly, in
+	// this round or a later one, once its own RequiresItems are met. K10's
+	// 曲径通幽 chain is the first book that needs the card to be *named*, not
+	// just drawn from a bigger pile.
+	GrantsClue []string `json:"grantsClue,omitempty"`
 	// MustReveal is the single-card version of RevealOnFind: the card itself
 	// says "本条线索必须公开", so finding it can never stay private no matter
 	// which phase it sits in.
@@ -159,11 +339,17 @@ type Clue struct {
 	// "深入调查" chain, where a card only exists after its parent surfaced.
 	UnlockedBy []string `json:"unlockedBy,omitempty"`
 	// Keywords unlock a private clue (a memory fragment) the first time one
-	// of them is spoken at the table or printed on a revealed clue.
-	Keywords []string  `json:"keywords,omitempty"`
-	IsPublic bool      `json:"isPublic"`
-	ImageURL string    `json:"imageUrl,omitempty"`
-	Links    ClueLinks `json:"links,omitempty"`
+	// of them is spoken at the table or printed on a revealed clue. K6's
+	// 「红烟深处和亡青叶」 needs both, which KeywordsAll asks for.
+	Keywords    []string  `json:"keywords,omitempty"`
+	KeywordsAll bool      `json:"keywordsAll,omitempty"`
+	IsPublic    bool      `json:"isPublic"`
+	ImageURL    string    `json:"imageUrl,omitempty"`
+	Links       ClueLinks `json:"links,omitempty"`
+	// Kind is the card family printed on the physical deck ("轮船线索",
+	// "随身物品", "尸体线索"). Phase.Draws matches on it; a script that never
+	// splits its deck can leave it empty.
+	Kind string `json:"kind,omitempty"`
 }
 
 // ClueLinks connects a clue to roles, secrets and facts.

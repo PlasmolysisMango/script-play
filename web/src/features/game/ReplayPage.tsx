@@ -89,7 +89,7 @@ export function ReplayPage({ code }: { code: string }) {
       <section className="space-y-4">
         <div className="card border-rose-500/40 bg-rose-950/20">
           <SectionTitle aside={<Tag tone="red">含剧透</Tag>}>真相</SectionTitle>
-          <p className="text-lg font-semibold text-rose-100">凶手：{killer || (namesReady ? '未标注' : '（读取角色名…）')}</p>
+          <p className="text-lg font-semibold text-rose-100">凶手：{killer || (namesReady ? (data.truth.killerRoleId ? '未标注' : 'NPC（见真相）') : '（读取角色名…）')}</p>
           {data.truth.method ? <p className="mt-2 text-sm text-slate-300">手法：{data.truth.method}</p> : null}
           {data.truth.motive ? <p className="mt-1 text-sm text-slate-300">动机：{data.truth.motive}</p> : null}
           {data.truth.summary ? (

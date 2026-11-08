@@ -79,9 +79,14 @@ async function request<T>(path: string, init: RequestInit = {}, canRetry = true)
     }
   }
   if (!res.ok) {
-    const message =
-      payload && typeof payload === 'object' && 'error' in payload
-        ? String((payload as { error: unknown }).error)
+    // A body the proxy refuses never reaches the Go handler, so nginx answers
+    // with its own HTML page and there is no JSON `error` to show. Without this
+    // branch the toast reads “请求失败（413）”, which tells nobody anything.
+    const hasServerError = !!payload && typeof payload === 'object' && 'error' in payload
+    const message = hasServerError
+      ? String((payload as { error: unknown }).error)
+      : res.status === 413
+        ? '文件太大：超过服务端上传上限，请压缩或拆分后重试'
         : `请求失败（${res.status}）`
     throw new ApiError(message, res.status, payload)
   }
@@ -189,11 +194,16 @@ export const api = {
     return request<ScriptResponse>('/api/scripts/sample', { method: 'POST' })
   },
   /** Uploaded originals: stored verbatim, never parsed. */
-  async materials(): Promise<{ materials: RawMaterial[]; dir: string }> {
-    const res = await request<{ materials: unknown[]; dir?: string }>('/api/admin/materials')
+  async materials(): Promise<{ materials: RawMaterial[]; dir: string; maxUploadMB: number }> {
+    const res = await request<{ materials: unknown[]; dir?: string; maxUploadMB?: number }>(
+      '/api/admin/materials',
+    )
     return {
       materials: (res.materials ?? []).map((m) => rawMaterialSchema.parse(m)),
       dir: res.dir ?? '',
+      // 0 means an old server that does not report the cap; the UI then just
+      // skips its pre-check and lets the server decide.
+      maxUploadMB: res.maxUploadMB ?? 0,
     }
   },
   async uploadMaterials(files: File[]): Promise<RawMaterial[]> {

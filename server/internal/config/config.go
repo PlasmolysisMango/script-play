@@ -139,8 +139,12 @@ func Load() (*Config, error) {
 			AgentTimeout: time.Duration(envInt("SP_AGENT_TIMEOUT_SEC", 120)) * time.Second,
 			FloorTimeout: time.Duration(envInt("SP_FLOOR_TIMEOUT_SEC", 90)) * time.Second,
 			// Raw scripts arrive as whole bundles: a docx with photos or a zip of
-			// chapter folders is easily tens of megabytes.
-			MaxUploadBytes: int64(envInt("SP_MAX_UPLOAD_MB", 64)) << 20,
+			// chapter folders is easily tens of megabytes, and the newest single
+			// archive on hand is 68 MB. The handler streams parts, so a bigger
+			// cap costs disk rather than RAM; it also caps a whole request at
+			// twice this value. nginx's client_max_body_size must be at least
+			// that large or the proxy answers 413 first.
+			MaxUploadBytes: int64(envInt("SP_MAX_UPLOAD_MB", 256)) << 20,
 			AutoAdvance:    envBool("SP_AUTO_ADVANCE", false),
 		},
 	}

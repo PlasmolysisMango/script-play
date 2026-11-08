@@ -7,6 +7,7 @@ import { Empty, Hint, SectionTitle, Spinner, StatusDot, Tag } from '../../compon
 import { Markdown } from '../../components/Markdown'
 import { styleOf, type Line } from '../../lib/transcript'
 import { ReadingPage } from './ReadingPage'
+import { CardTable } from './CardTable'
 import { narrationFor, probeVoices, speak, stopSpeaking, warmVoices, type VoiceCapabilities } from '../../voice'
 import { useVoiceCapabilities } from '../../lib/useVoice'
 import type { GameEvent, SeatState, SpeechSlot, TurnOption, TurnPrompt, Visible } from '../../types/schema'
@@ -21,6 +22,14 @@ type SendCmd = {
   replyTo?: string
   /** Target of a whisper. */
   to?: string
+  /** 卡牌本：出的哪张牌、挑的哪两张、指定的颜色。 */
+  cardId?: string
+  cardIds?: string[]
+  color?: string
+  /** 卡牌本：积分卡上的认人结果（seatId → roleId）。 */
+  guesses?: Record<string, string>
+  /** 技能指向的道友。 */
+  targetId?: string
 }
 
 /** Events that change what this seat may see, so the snapshot must be refetched. */
@@ -305,6 +314,9 @@ export function GamePage({ code }: { code: string }) {
           </div>
         ) : null}
 
+        {/* 卡牌本的牌桌：手牌、台面、技能指向和积分卡。 */}
+        <CardTable state={state} seatId={seatId} isSpectator={isSpectator} send={send} />
+
         {!isSpectator && state.status === 'running' ? (
           <div className="mt-3 space-y-2 border-t border-line/60 pt-3">
             {replyTo ? (
@@ -411,7 +423,14 @@ export function GamePage({ code }: { code: string }) {
                   {s.roleName || s.displayName}
                   {s.id === seatId ? '（我）' : ''}
                 </span>
-                <span className="text-slate-500">{s.kind === 'agent' ? 'AI' : s.kind === 'spectator' ? '观战' : '真人'}</span>
+                <span className="flex items-center gap-2 text-slate-500">
+                  {state.pointsLabel && state.tablePoints?.[s.id] !== undefined ? (
+                    <span className="text-warm">
+                      {state.tablePoints[s.id]} 根{state.pointsLabel}
+                    </span>
+                  ) : null}
+                  {s.kind === 'agent' ? 'AI' : s.kind === 'spectator' ? '观战' : '真人'}
+                </span>
               </li>
             ))}
           </ul>
@@ -442,6 +461,74 @@ export function GamePage({ code }: { code: string }) {
 
 function isHostWait(text: string): boolean {
   return text.includes('等待主持人进入下一阶段') || text.includes('进入自由讨论')
+}
+
+/**
+ * 本角色的特殊技能（K6：每位仙主一个，整局只能发动一次）。
+ *
+ * 稿面文字原样排出，能不能发由服务端算好（ready / why），这里不自己猜规则；
+ * 需要点人的技能先选一道友，再按「发动」。
+ */
+function SkillCard({
+  skill,
+  points,
+  pointsLabel,
+  seats,
+  target,
+  onTarget,
+  onUse,
+}: {
+  skill: NonNullable<SeatState['skill']>
+  points: number
+  pointsLabel: string
+  seats: { id: string; roleName?: string; displayName: string }[]
+  target: string
+  onTarget: (id: string) => void
+  onUse: (targetId: string) => void
+}) {
+  const needsTarget = skill.target === 'other'
+  const disabled = !skill.ready || (needsTarget && !target)
+  return (
+    <div className="rounded-xl border border-warm/40 bg-warm/5 p-3">
+      <p className="text-xs font-medium text-warm">
+        特殊技能 · {skill.name}
+        {skill.used ? '（已用过）' : ''}
+      </p>
+      <p className="mt-1 text-xs leading-relaxed text-slate-300">{skill.text}</p>
+      <p className="mt-1 text-[11px] text-slate-500">
+        你现在有 {points} 根{pointsLabel}
+        {needsTarget ? '·选一道友：' : ''}
+      </p>
+      {needsTarget && !skill.used ? (
+        <div className="mt-2 flex flex-wrap gap-2">
+          {seats.map((s) => (
+            <button
+              key={s.id}
+              type="button"
+              className={`btn-ghost text-xs ${target === s.id ? 'border-accent text-accent' : ''}`}
+              aria-pressed={target === s.id}
+              onClick={() => onTarget(s.id)}
+            >
+              {s.roleName || s.displayName}
+            </button>
+          ))}
+        </div>
+      ) : null}
+      {!skill.used ? (
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            className="btn-ghost text-xs"
+            disabled={disabled}
+            onClick={() => onUse(needsTarget ? target : '')}
+          >
+            发动技能
+          </button>
+          {!skill.ready && skill.why ? <span className="text-[11px] text-slate-500">{skill.why}</span> : null}
+        </div>
+      ) : null}
+    </div>
+  )
 }
 
 function Transcript({
@@ -573,6 +660,14 @@ function PhaseActions({
   const phase = state.visible.phase
   const options = state.search ?? []
   const myTurn = state.floor?.seatId === seatId
+  // 行动点本（K6 仙骨）：余量、名字都跟着本子走，没有这本子就整块不出现。
+  const points = state.points ?? 0
+  const pointsLabel = state.pointsLabel || '行动点'
+  const hasPoints = state.pointsLabel !== '' || points > 0
+  const skill = state.skill
+  const [skillTarget, setSkillTarget] = useState('')
+  // 分类抽卡时把规律写在面板上，否则玩家只看到「还剩 3 次」却不知下一张是哪类。
+  const drawPlan = (phase?.draws ?? []).map((d) => `${d.kind || '任意线索'} ${d.count} 张`).join(' + ')
   const voteTargets = useMemo(
     () => (state.visible.seats ?? []).filter((s) => s.roleId && s.id !== seatId && s.kind !== 'spectator'),
     [state.visible.seats, seatId],
@@ -580,57 +675,135 @@ function PhaseActions({
 
   if (phase?.type === 'search' && phase.searchMode === 'random') {
     const left = state.draw ?? 0
+    // 底卡写着「可获得曲径通幽 N」时，那一张不占本轮 2/4/6 张，也不在牌堆里：
+    // 轮到自己时直接点名取，次数抽完了也能取。
+    const granted = options.filter((o) => o.granted)
     return (
-      <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-3">
-        <p className="mb-2 text-xs text-emerald-200">
-          搜证阶段（随机抽取）：轮到你抽一次，抽到什么算什么。
-          {phase.revealOnFind ? '本轮搜到的线索当场公开。' : ''}
-        </p>
-        <div className="flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            className="btn-primary text-xs"
-            disabled={!myTurn || left <= 0}
-            onClick={() => send({ type: 'search.draw' })}
-          >
-            随机抽取
-          </button>
-          <span className="text-xs text-slate-400">
-            {left <= 0
-              ? '你本轮的抽取次数已用完，等待阶段推进。'
-              : myTurn
-                ? `轮到你，还剩 ${left} 次`
-                : '还没轮到你，按本阶段顺序依次抽取。'}
-          </span>
+      <div className="space-y-3">
+        <div className="rounded-xl border border-line bg-panel p-3">
+          <p className="mb-2 text-xs text-slate">
+            搜证阶段（随机抽取）：轮到你抽一次，抽到什么算什么。
+            {phase.revealOnFind ? '本轮搜到的线索当场公开。' : ''}
+          </p>
+          {drawPlan ? <p className="mb-2 text-xs text-slate">本轮抽卡：{drawPlan}</p> : null}
+          {hasPoints ? (
+            <p className="mb-2 text-xs text-warm">
+              你还剩 {points} 根{pointsLabel}·每抽一张花 1 根
+            </p>
+          ) : null}
+          {granted.length > 0 ? (
+            <div className="mb-2 space-y-2 rounded-lg border border-line bg-panel p-2">
+              <p className="text-xs text-warm">
+                你手里的线索写着「可获得曲径通幽」：可以点名取下面这张，不占本轮次数，也不必等自己那一手。
+              </p>
+              <div className="flex flex-wrap gap-2">
+                {granted.map((o) => (
+                  <button
+                    key={o.id}
+                    type="button"
+                    className="btn-ghost text-xs"
+                    onClick={() => send({ type: 'search.clue', clueId: o.id })}
+                  >
+                    {o.hint || '曲径通幽'}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : null}
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              className="btn-primary text-xs"
+              disabled={!myTurn || left <= 0}
+              onClick={() => send({ type: 'search.draw' })}
+            >
+              随机抽取
+            </button>
+            <button
+              type="button"
+              className="btn-ghost text-xs"
+              disabled={!myTurn}
+              onClick={() => send({ type: 'search.pass' })}
+            >
+              结束本轮
+            </button>
+            <span className="text-xs text-slate-400">
+              {left <= 0
+                ? '你本轮的抽取次数已用完，等待阶段推进。'
+                : myTurn
+                  ? `轮到你，还剩 ${left} 次`
+                  : '还没轮到你，按本阶段顺序依次抽取。'}
+            </span>
+          </div>
         </div>
+        {skill && !skill.used ? (
+          <SkillCard
+            skill={skill}
+            points={points}
+            pointsLabel={pointsLabel}
+            seats={(state.visible.seats ?? []).filter(
+              (s) => s.id !== seatId && s.roleId && s.kind !== 'spectator',
+            )}
+            target={skillTarget}
+            onTarget={setSkillTarget}
+            onUse={(targetId) => send({ type: 'skill.use', targetId })}
+          />
+        ) : null}
       </div>
     )
   }
 
   if (phase?.type === 'search') {
     return (
-      <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-3">
-        <p className="mb-2 text-xs text-emerald-200">
-          搜证阶段：{myTurn ? '选一个位置翻查，背面写着那里有什么' : '还没轮到你，按阶段顺序依次搜证。'}
-          {phase.revealOnFind ? '本轮搜到的线索当场公开。' : ''}
-        </p>
-        <div className="flex flex-wrap gap-2">
-          {options.length === 0 ? (
-            <span className="text-xs text-slate-500">本轮线索已被搜完，等待阶段推进。</span>
-          ) : (
-            options.map((o) => (
-              <button
-                key={o.id}
-                type="button"
-                className="btn-ghost text-xs"
-                disabled={!myTurn}
-                onClick={() => send({ type: 'search.clue', clueId: o.id })}
-              >
-                {o.hint || '未标注位置'}
+      <div className="space-y-3">
+        <div className="rounded-xl border border-line bg-panel p-3">
+          <p className="mb-2 text-xs text-slate">
+            搜证阶段：{myTurn ? '选一个位置翻查，背面写着那里有什么' : '还没轮到你，按阶段顺序依次搜证。'}
+            {phase.revealOnFind ? '本轮搜到的线索当场公开。' : ''}
+          </p>
+          {drawPlan ? <p className="mb-2 text-xs text-slate">本轮抽卡：{drawPlan}</p> : null}
+          {hasPoints ? (
+            <p className="mb-2 text-xs text-warm">
+              你还剩 {points} 根{pointsLabel} · 每抽一张花 1 根
+            </p>
+          ) : null}
+          <div className="flex flex-wrap gap-2">
+            {options.length === 0 ? (
+              <span className="text-xs text-slate-500">本轮线索已被搜完，等待阶段推进。</span>
+            ) : (
+              options.map((o) => (
+                <button
+                  key={o.id}
+                  type="button"
+                  className="btn-ghost text-xs"
+                  title={o.granted ? '底卡写着可获得它：不占本轮次数' : undefined}
+                  disabled={!myTurn && !o.granted}
+                  onClick={() => send({ type: 'search.clue', clueId: o.id })}
+                >
+                  {o.hint || '未标注位置'}
+                </button>
+              ))
+            )}
+            {myTurn ? (
+              <button type="button" className="btn-ghost text-xs" onClick={() => send({ type: 'search.pass' })}>
+                结束本轮
               </button>
-            ))
-          )}
+            ) : null}
+          </div>
         </div>
+        {skill && !skill.used ? (
+          <SkillCard
+            skill={skill}
+            points={points}
+            pointsLabel={pointsLabel}
+            seats={(state.visible.seats ?? []).filter(
+              (s) => s.id !== seatId && s.roleId && s.kind !== 'spectator',
+            )}
+            target={skillTarget}
+            onTarget={setSkillTarget}
+            onUse={(targetId) => send({ type: 'skill.use', targetId })}
+          />
+        ) : null}
       </div>
     )
   }

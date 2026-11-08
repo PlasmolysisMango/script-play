@@ -151,6 +151,11 @@ func TestNonOwnerCannotSeeTheSolution(t *testing.T) {
 	if len(safe.Body.Clues) != 0 {
 		t.Fatal("redact leaked clues")
 	}
+	for _, p := range safe.Body.Phases {
+		if p.DMScript != "" {
+			t.Fatalf("redact leaked phase dmScript: %s", p.ID)
+		}
+	}
 }
 
 func TestVisibleBeforeAndAfterReveal(t *testing.T) {

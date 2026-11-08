@@ -67,8 +67,11 @@ func (s *Server) handleScriptAsset(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", mime)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	// Unlike an upload, the name here is stable: an author who replaces a map
-	// keeps the same URL, so the lease is an hour, not a week.
-	w.Header().Set("Cache-Control", "public, max-age=3600")
+	// The name is stable by design: an author who re-crops a map replaces the
+	// file and keeps the URL. A stored copy therefore keeps showing the old
+	// picture — which is what a player reported after a re-crop — so every hit
+	// revalidates instead. ServeContent answers the conditional request with a
+	// 304 when nothing changed, so the price is one empty round trip.
+	w.Header().Set("Cache-Control", "no-cache")
 	http.ServeContent(w, r, name, fi.ModTime(), f)
 }

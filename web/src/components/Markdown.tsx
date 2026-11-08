@@ -118,6 +118,33 @@ export function Markdown({ text, className = '' }: { text: string; className?: s
                 </p>
               </div>
             )
+          case 'table':
+            return (
+              <div key={i} className="overflow-x-auto">
+                <table className="w-full border-collapse text-[11px]">
+                  <thead>
+                    <tr>
+                      {b.head.map((cell, j) => (
+                        <th key={j} className="border-b border-line px-2 py-1 text-left font-semibold text-slate-400">
+                          <InlineRuns parts={cell} />
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {b.rows.map((row, j) => (
+                      <tr key={j}>
+                        {row.map((cell, k) => (
+                          <td key={k} className="border-b border-line/60 px-2 py-1">
+                            <InlineRuns parts={cell} />
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )
           default:
             return (
               <p key={i} className="whitespace-pre-wrap">

@@ -165,6 +165,11 @@ export const visibleSchema = z.object({
     revealOnFind: z.boolean().nullish().transform((v) => v ?? false),
     perPlayerPick: z.number().optional().default(0),
     speechPerPlayer: z.number().optional().default(0),
+    // 分类抽卡：本轮先从哪类卡里抽几张（「随身物品 1 张、轮船线索 3 张」）。
+    draws: z
+      .array(z.object({ kind: z.string().optional().default(''), count: z.number().optional().default(0) }))
+      .nullish()
+      .transform((v) => v ?? []),
   }),
   phaseIndex: z.number(),
   round: z.number(),
@@ -178,6 +183,11 @@ export const visibleSchema = z.object({
   items: z.array(z.string()).nullish().transform((v) => v ?? []),
   transcript: z.array(transcriptLineSchema).nullish().transform((v) => v ?? []),
   truth: truthSchema.nullish().transform((v) => v ?? undefined),
+  /** 卡牌本：盒盖上印的五个角色（A 谈资源 …），身份分配不在里面。 */
+  cardRoles: z
+    .array(z.object({ id: z.string(), letter: z.string().optional().default(''), name: z.string(), intro: z.string().optional().default('') }))
+    .nullish()
+    .transform((v) => v ?? []),
   seats: z.array(publicSeatSchema).nullish().transform((v) => v ?? []),
 })
 export type Visible = z.infer<typeof visibleSchema>
@@ -215,8 +225,60 @@ export type SpeechSlot = z.infer<typeof speechSlotSchema>
 export const searchOptionSchema = z.object({
   id: z.string(),
   hint: z.string().optional().default(''),
+  // 底卡写着「可获得曲径通幽 N」的那一张：不在本轮牌堆里，不占本轮张数，
+  // 只能在轮到自己时点名称取（抽到底卡的人拿到的是这张卡，不是随机再抽）。
+  granted: z.boolean().optional().default(false),
 })
 export type SearchOption = z.infer<typeof searchOptionSchema>
+
+export const cardViewSchema = z.object({
+  id: z.string(),
+  kind: z.string(),
+  color: z.string().optional().default(''),
+  number: z.number().optional().default(0),
+  title: z.string().optional().default(''),
+  text: z.string().optional().default(''),
+})
+export type CardView = z.infer<typeof cardViewSchema>
+
+export const cardPendingSchema = z.object({
+  seatId: z.string(),
+  kind: z.string(),
+  target: z.string().optional().default(''),
+  gained: z.string().optional().default(''),
+})
+export type CardPending = z.infer<typeof cardPendingSchema>
+
+export const cardScoreSchema = z.object({
+  seatId: z.string(),
+  rank: z.number().optional().default(0),
+  rankPoints: z.number().optional().default(0),
+  killerPoints: z.number().optional().default(0),
+  playerPoints: z.number().optional().default(0),
+  identityPoints: z.number().optional().default(0),
+  total: z.number().optional().default(0),
+})
+export type CardScore = z.infer<typeof cardScoreSchema>
+
+/** 卡牌本的台面：大家都能看的部分，加上本人的可出牌集合。 */
+export const tableViewSchema = z.object({
+  top: cardViewSchema.nullish().transform((v) => v ?? undefined),
+  /** 台面是技能牌时，下家真正要跟的那一张（技能牌没有颜色和数字）。 */
+  base: cardViewSchema.nullish().transform((v) => v ?? undefined),
+  turnSeatId: z.string().optional().default(''),
+  counts: z.record(z.number()).nullish().transform((v) => v ?? {}),
+  finished: z.array(z.string()).nullish().transform((v) => v ?? []),
+  forcedColor: z.string().optional().default(''),
+  randomNext: z.boolean().optional().default(false),
+  pending: cardPendingSchema.nullish().transform((v) => v ?? undefined),
+  result: z.array(cardScoreSchema).nullish().transform((v) => v ?? []),
+  playable: z.array(z.string()).nullish().transform((v) => v ?? []),
+  colors: z.array(z.string()).nullish().transform((v) => v ?? []),
+  deck: z.number().optional().default(0),
+  /** 整个出牌堆：陷入僵局要从这里挑两张线索牌。 */
+  discard: z.array(cardViewSchema).nullish().transform((v) => v ?? []),
+})
+export type TableView = z.infer<typeof tableViewSchema>
 
 export const seatStateSchema = z.object({
   visible: visibleSchema,
@@ -243,6 +305,33 @@ export const seatStateSchema = z.object({
   talkOpen: z.boolean().optional().default(false),
   queue: z.array(speechSlotSchema).nullish().transform((v) => v ?? []),
   prompt: turnPromptSchema.nullish().transform((v) => v ?? undefined),
+  /** 卡牌本：本人的手牌。 */
+  hand: z.array(cardViewSchema).nullish().transform((v) => v ?? []),
+  /** 卡牌本：台面（含本人当前可出的牌）。 */
+  table: tableViewSchema.nullish().transform((v) => v ?? undefined),
+  /** 卡牌本：本人已交回积分卡。 */
+  scoreDone: z.boolean().optional().default(false),
+  /** 行动点（K6 的「仙骨」）：本人余量，以及这张桌上每个人的余量。 */
+  points: z.number().optional().default(0),
+  pointsLabel: z.string().optional().default(''),
+  tablePoints: z.record(z.number()).nullish().transform((v) => v ?? {}),
+  /** 本角色的特殊技能；没写技能的本子不会有这一块。 */
+  skill: z
+    .object({
+      id: z.string(),
+      name: z.string(),
+      text: z.string().optional().default(''),
+      cost: z.number().optional().default(0),
+      allCost: z.boolean().optional().default(false),
+      exactCost: z.number().optional().default(0),
+      /** "other" 由本人挑一名道友，"next" 自动指向下一名，空则不选人。 */
+      target: z.string().optional().default(''),
+      used: z.boolean().optional().default(false),
+      ready: z.boolean().optional().default(false),
+      why: z.string().optional().default(''),
+    })
+    .nullish()
+    .transform((v) => v ?? undefined),
 })
 export type SeatState = z.infer<typeof seatStateSchema>
 

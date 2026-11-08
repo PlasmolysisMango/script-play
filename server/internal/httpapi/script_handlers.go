@@ -105,6 +105,12 @@ func redact(rec *domain.ScriptRecord) *domain.ScriptRecord {
 	body.Roles = roles
 	body.Clues = nil
 	body.Facts = nil
+	phases := make([]domain.Phase, len(body.Phases))
+	copy(phases, body.Phases)
+	for i := range phases {
+		phases[i].DMScript = ""
+	}
+	body.Phases = phases
 	cp.Body = &body
 	cp.RawSource = ""
 	return &cp
