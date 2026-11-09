@@ -42,6 +42,7 @@ function stateWith(transcript: { seq: number; kind: string; text: string }[]): S
     },
     phases: [],
     voteCount: 0,
+    voted: false,
     search: [],
     order: [],
     draw: 0,

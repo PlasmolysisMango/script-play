@@ -303,6 +303,8 @@ export const seatStateSchema = z.object({
   /** The action part of this phase is over and the host has not advanced yet. */
   phaseDone: z.boolean().optional().default(false),
   voteCount: z.number().optional().default(0),
+  /** 本人是否已经投过票（弃权也算）。 */
+  voted: z.boolean().optional().default(false),
   votes: z.record(z.number()).nullish().transform((v) => v ?? undefined),
   search: z.array(searchOptionSchema).nullish().transform((v) => v ?? []),
   /** Random search mode: how many draws this seat still owes. */

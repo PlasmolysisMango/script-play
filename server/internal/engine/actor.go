@@ -119,6 +119,10 @@ type Actor struct {
 	// waitCancel releases the single pending waiter when the phase moves on,
 	// so a waiter with no timer cannot outlive its phase.
 	waitCancel context.CancelFunc
+	// voteWake releases the vote waiter when any ballot lands, so a seat that
+	// votes while the walk is prompting somebody else does not wait out its
+	// timer before the walk notices.
+	voteWake chan struct{}
 
 	speech   map[string]int
 	searched map[string]int
@@ -171,7 +175,10 @@ type Actor struct {
 	// phaseDone marks a phase whose actions are finished but which the host has
 	// not released yet: no waiter is running, the table is just waiting.
 	phaseDone bool
-	phaseGen  int
+	// voteClosed seals the ballot before the tally so a late frame cannot alter
+	// a result that was already printed.
+	voteClosed bool
+	phaseGen   int
 	started   bool
 	finished  bool
 
@@ -193,6 +200,7 @@ func NewActor(g *domain.Game, sc *domain.Script, reg *llm.Registry, sink GameSin
 		cfg:      cfg,
 		personas: map[string]persona.Persona{},
 		waiters:  map[string]chan ClientMessage{},
+		voteWake: make(chan struct{}, 1),
 		speech:   map[string]int{},
 		searched: map[string]int{},
 		// buffered so queueing never blocks the command that queued.
@@ -297,6 +305,9 @@ type SeatState struct {
 	VoteCount int               `json:"voteCount"`
 	Votes     map[string]int    `json:"votes,omitempty"`
 	Personas  map[string]string `json:"personas,omitempty"`
+	// Voted tells this seat it has already cast a ballot, including an abstention,
+	// so the client can stop offering the buttons and say who the table waits on.
+	Voted bool `json:"voted"`
 	// PhaseDone tells the client the actions are finished and the host has not
 	// pressed "next phase" yet, so the table shows a waiting banner instead of
 	// keys nobody can press.
@@ -401,6 +412,9 @@ func (a *Actor) stateLocked(seat *domain.Seat, includeTruth bool) SeatState {
 		st.Votes = tally(a.g.Votes)
 	}
 	st.VoteCount = len(a.g.Votes)
+	if seat != nil {
+		_, st.Voted = a.g.Votes[seat.ID]
+	}
 	if seat != nil && seat.Kind != domain.SeatSpectator {
 		if ph := a.m.Current(a.g); ph != nil && ph.Type == domain.PhaseSearch {
 			allowed := len(ph.OnlyRoleIDs) == 0 || slices.Contains(ph.OnlyRoleIDs, seat.RoleID)
@@ -517,6 +531,11 @@ func (a *Actor) Handle(ctx context.Context, seatID string, msg ClientMessage) er
 		// A skill may fire at any point of a search round, including while this seat
 		// holds the floor, so it is resolved here rather than inside one waiter.
 		return a.useSkill(*seat, msg.TargetID)
+	case "vote.cast":
+		// The ballot is open to the whole table, not just the seat the walk is
+		// currently prompting: a player who clicks early must not be rejected and
+		// then have to notice the next prompt to try again.
+		return a.castVote(*seat, msg.RoleID)
 	}
 
 	if waitCh != nil {
@@ -533,9 +552,6 @@ func (a *Actor) Handle(ctx context.Context, seatID string, msg ClientMessage) er
 		text := strings.TrimSpace(msg.Text)
 		if text == "" {
 			return ErrNotAllowed{Reason: "发言内容为空"}
-		}
-		if phase != nil && phase.Type == domain.PhaseOpening {
-			return ErrNotAllowed{Reason: "开场阶段由主持人推进"}
 		}
 		if a.holdTalk(*seat, text, msg.ReplyTo) {
 			return nil
@@ -676,11 +692,15 @@ func (a *Actor) beginPhase(ctx context.Context) {
 	a.searchOpen = ph.Type == domain.PhaseSearch
 	a.floor = nil
 	a.phaseDone = false
+	a.voteClosed = false
 	a.resetTalkLocked()
 	if ph.Type == domain.PhaseVote {
 		// 每个投票阶段是独立的一轮：不清掉上一轮，主持人的计票面板会带着
 		// 旧票数开场，看起来像这一轮已经投完了。
 		a.g.Votes = map[string]string{}
+		// Drop any wake left over from the previous ballot; waiters of this round
+		// need a channel that starts empty.
+		a.voteWake = make(chan struct{}, 1)
 	}
 	// Just the name: the host's "进入下一阶段：…" line right above already
 	// says what happened, so the divider only has to mark where.
@@ -708,9 +728,14 @@ func (a *Actor) beginPhase(ctx context.Context) {
 
 	switch ph.Type {
 	case domain.PhaseReading, domain.PhaseOpening:
-		// Nothing to collect: everyone reads the role book (reading) or the host
-		// sets the scene (opening), then the host releases the phase.
-		go a.completePhase(ctx, gen)
+		// Reading and opening are host-paced scenes: the table reads the role
+		// books or plays an interactive opening until the host moves on. They
+		// have no actions to collect, so there is no waiter to close the phase.
+		// Auto-advance is the exception for unattended rooms, which would
+		// otherwise park on the first scene forever.
+		if a.cfg.AutoAdvance {
+			go a.completePhase(ctx, gen)
+		}
 	case domain.PhasePlay:
 		go a.runPlay(ctx, gen)
 	case domain.PhaseScore:
@@ -821,6 +846,10 @@ func (a *Actor) finishLocked(reason string) {
 		return
 	}
 	a.finished = true
+	a.phaseDone = true
+	a.voteClosed = true
+	a.floor = nil
+	a.talkOpen = false
 	a.cancelWaiterLocked()
 	a.g.Status = domain.RoomFinished
 	now := time.Now().UTC()
@@ -1543,6 +1572,9 @@ func (a *Actor) awaitSearch(ctx context.Context, gen int, seat domain.Seat, ph *
 			switch msg.Type {
 			case "search.clue":
 				if err := a.applySearch(seat, msg.ClueID, ph); err != nil {
+					if a.retireExhaustedSearch(seat, ph) {
+						return false
+					}
 					a.notify(seat, err.Error())
 					if a.picksLeftLocked(seat, ph) <= 0 {
 						// 仙骨正好在刚才那一手花完了（或被人抽干）：这个回合已经没有可做的事。
@@ -1552,6 +1584,9 @@ func (a *Actor) awaitSearch(ctx context.Context, gen int, seat domain.Seat, ph *
 						timer.Reset(a.cfg.floor())
 					}
 					continue
+				}
+				if a.retireExhaustedSearch(seat, ph) {
+					return false
 				}
 				if left := a.keepTurn(seat, ph, "搜证"); left > 0 {
 					if timer != nil {
@@ -1569,11 +1604,17 @@ func (a *Actor) awaitSearch(ctx context.Context, gen int, seat domain.Seat, ph *
 			case "search.draw":
 				// Random mode: the seat does not name a clue, it just draws one.
 				if err := a.drawSearch(seat, ph); err != nil {
+					if a.retireExhaustedSearch(seat, ph) {
+						return false
+					}
 					a.notify(seat, err.Error())
 					if timer != nil {
 						timer.Reset(a.cfg.floor())
 					}
 					continue
+				}
+				if a.retireExhaustedSearch(seat, ph) {
+					return false
 				}
 				if left := a.keepTurn(seat, ph, "随机抽取"); left > 0 {
 					if timer != nil {
@@ -1641,6 +1682,30 @@ func (a *Actor) keepTurn(seat domain.Seat, ph *domain.Phase, what string) int {
 // 「可获得曲径通幽 N」 card is still waiting to be named. That card is a bonus
 // printed on the parent clue, so it must stay claimable on the seat's very
 // last draw instead of silently expiring with the turn.
+// retireExhaustedSearch ends a turn whose owner still owes picks but has
+// nothing left to take: the pool ran dry mid-round. Without this the waiter
+// answers every click with "本轮线索已被抽完" and never yields the floor.
+func (a *Actor) retireExhaustedSearch(seat domain.Seat, ph *domain.Phase) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.m.Current(a.g) != ph || a.picksLeftLocked(seat, ph) <= 0 {
+		return false
+	}
+	if len(a.availableCluesLocked(seat, ph)) > 0 {
+		return false
+	}
+	a.searched[seat.ID] = a.searchLimitLocked(seat, ph)
+	a.appendLocked(domain.Event{
+		Type:       domain.EvSystem,
+		SeatID:     seat.ID,
+		Visibility: SeatVisibility(seat.ID),
+		PhaseID:    ph.ID,
+		Text:       "本轮线索已被抽完，本轮搜证结束",
+	})
+	a.persistLocked()
+	return true
+}
+
 func (a *Actor) holdForGranted(seat domain.Seat, ph *domain.Phase) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -2953,12 +3018,22 @@ func (a *Actor) runVote(ctx context.Context, gen int) {
 		if !a.alive(gen) {
 			return
 		}
+		if a.hasVoted(seat.ID) {
+			// An early ballot was already accepted while another seat held the
+			// prompt; do not ask this one twice.
+			continue
+		}
 		if seat.Kind == domain.SeatAgent {
 			a.agentVote(ctx, gen, seat)
 		} else {
 			a.awaitVote(ctx, gen, seat)
 		}
 	}
+	a.mu.Lock()
+	// Sealing the ballot before the tally keeps a frame that arrives during the
+	// tally from changing a result that is already on screen.
+	a.voteClosed = true
+	a.mu.Unlock()
 	a.tallyVotes()
 	a.mu.Lock()
 	a.applyVoteEffectLocked(ph)
@@ -2973,7 +3048,13 @@ func (a *Actor) awaitVote(ctx context.Context, gen int, seat domain.Seat) bool {
 		a.mu.Unlock()
 		return false
 	}
+	if _, ok := a.g.Votes[seat.ID]; ok {
+		// The ballot was already cast while an earlier seat held the prompt.
+		a.mu.Unlock()
+		return true
+	}
 	ch := make(chan ClientMessage, 1)
+	wake := a.voteWake
 	a.waiters[seat.ID] = ch
 	a.appendLocked(domain.Event{Type: domain.EvSystem, SeatID: seat.ID, Visibility: SeatVisibility(seat.ID), Text: a.votePromptFor(a.m.Current(a.g))})
 	a.persistLocked()
@@ -3000,6 +3081,13 @@ func (a *Actor) awaitVote(ctx context.Context, gen int, seat domain.Seat) bool {
 		case <-expired:
 			a.recordVote(seat, "")
 			return false
+		case <-wake:
+			// Somebody cast a ballot (possibly this seat from the sideline).
+			// Either way the walk re-checks instead of sleeping out the clock.
+			if a.hasVoted(seat.ID) {
+				return true
+			}
+			continue
 		case msg := <-ch:
 			if msg.Type == "speak.text" {
 				if text := strings.TrimSpace(msg.Text); text != "" {
@@ -3079,8 +3167,63 @@ func (a *Actor) recordVoteByName(seat domain.Seat, roleName string, v Visible) {
 	a.recordVote(seat, roleID)
 }
 
+func (a *Actor) hasVoted(seatID string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	_, ok := a.g.Votes[seatID]
+	return ok
+}
+
+// castVote accepts a ballot from any seated player at any point of the vote
+// phase. The sequential walk still prompts each seat in turn, but it is only a
+// nudge: the table can fill the ballot in whatever order people click.
+func (a *Actor) castVote(seat domain.Seat, roleID string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.finished {
+		return ErrNotAllowed{Reason: "本局已结束"}
+	}
+	ph := a.m.Current(a.g)
+	if ph == nil || ph.Type != domain.PhaseVote {
+		return ErrNotAllowed{Reason: "现在不是投票阶段"}
+	}
+	if a.phaseDone || a.voteClosed {
+		return ErrNotAllowed{Reason: "投票已结束"}
+	}
+	if seat.Kind == domain.SeatSpectator {
+		return ErrNotAllowed{Reason: "观战者不能投票"}
+	}
+	if _, ok := a.g.Votes[seat.ID]; ok {
+		return nil
+	}
+	if roleID != "" {
+		if roleID == seat.RoleID {
+			return ErrNotAllowed{Reason: "不能投给自己"}
+		}
+		if a.sc.Tokenize().RoleByID(roleID) == nil {
+			return ErrNotAllowed{Reason: "投票目标不存在"}
+		}
+	}
+	a.recordVoteLocked(seat, roleID)
+	// A non-blocking nudge: the vote waiter may not exist yet, and the ballot is
+	// already stored either way.
+	select {
+	case a.voteWake <- struct{}{}:
+	default:
+	}
+	return nil
+}
+
 func (a *Actor) recordVote(seat domain.Seat, roleID string) {
 	a.mu.Lock()
+	a.recordVoteLocked(seat, roleID)
+	a.mu.Unlock()
+}
+
+func (a *Actor) recordVoteLocked(seat domain.Seat, roleID string) {
+	if _, ok := a.g.Votes[seat.ID]; ok {
+		return
+	}
 	a.g.Votes[seat.ID] = roleID
 	text := "已投票"
 	if roleID != "" {
@@ -3094,7 +3237,6 @@ func (a *Actor) recordVote(seat domain.Seat, roleID string) {
 	}
 	a.appendLocked(domain.Event{Type: domain.EvVote, SeatID: seat.ID, RoleID: roleID, Text: text})
 	a.persistLocked()
-	a.mu.Unlock()
 }
 
 func (a *Actor) tallyVotes() {

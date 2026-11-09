@@ -119,8 +119,9 @@ func TestUnlimitedFloorNeverTimesOut(t *testing.T) {
 	})
 }
 
-// Rooms are host-driven by default: a phase whose actions are done parks the
-// table (phaseDone) and only the host's skip steps into the next one.
+// Rooms are host-driven by default: an opening has no actions to collect but
+// stays live for table interaction, and only the host's skip steps into the
+// next phase.
 func TestPhaseWaitsForHostByDefault(t *testing.T) {
 	sc := fixtureScript()
 	g := domain.NewGame("g1", "room1", "sc1", nil)
@@ -142,24 +143,59 @@ func TestPhaseWaitsForHostByDefault(t *testing.T) {
 	// The fixture opens with an opening phase, which has no actions to collect.
 	waitFor(t, 3*time.Second, func() bool {
 		st, ok := a.StateForSeat("seat1")
-		return ok && st.PhaseDone
+		return ok && !st.PhaseDone
 	})
 	time.Sleep(300 * time.Millisecond)
 	if idx := a.Snapshot().PhaseIndex; idx != 0 {
 		t.Fatalf("phase advanced without the host: index %d", idx)
 	}
-	waitFor(t, 3*time.Second, func() bool {
-		return hasSystemEvent(a.Snapshot(), "", "等待主持人进入下一阶段")
+	if hasSystemEvent(a.Snapshot(), "", "等待主持人进入下一阶段") {
+		t.Fatal("opening was closed before the host released it")
+	}
+
+	if err := a.Handle(context.Background(), "seat1", ClientMessage{Type: "host.skip"}); err != nil {
+		t.Fatalf("host skip: %v", err)
+	}
+	waitFor(t, 3*time.Second, func() bool { return a.Snapshot().PhaseIndex == 1 })
+}
+
+// Opening scenes (K13's dice questions) are interactive: speech is accepted
+// while the phase waits for the host.
+func TestOpeningAcceptsSpeechUntilHostAdvances(t *testing.T) {
+	sc := fixtureScript()
+	g := domain.NewGame("g1", "room1", "sc1", nil)
+	g.Seats = append(g.Seats, domain.Seat{
+		ID:          "seat1",
+		RoomID:      "room1",
+		RoleID:      "r1",
+		Kind:        domain.SeatHuman,
+		DisplayName: "玩家r1",
+		IsHost:      true,
+		Connected:   true,
+		JoinedAt:    time.Now(),
+	})
+	a := NewActor(g, sc, nil, nil, nil, ActorConfig{FloorTimeout: time.Second, AgentTimeout: 2 * time.Second})
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	go a.Start(ctx)
+
+	waitFor(t, 3*time.Second, func() bool { return a.Snapshot().PhaseIndex == 0 })
+	if err := a.Handle(context.Background(), "seat1", ClientMessage{Type: "speak.text", Text: "我掷出六点，先问陆沉。"}); err != nil {
+		t.Fatalf("opening speech: %v", err)
+	}
+	waitFor(t, 2*time.Second, func() bool {
+		for _, ev := range a.Snapshot().Events {
+			if ev.Type == domain.EvSpeech && strings.Contains(ev.Text, "我掷出六点") {
+				return true
+			}
+		}
+		return false
 	})
 
 	if err := a.Handle(context.Background(), "seat1", ClientMessage{Type: "host.skip"}); err != nil {
 		t.Fatalf("host skip: %v", err)
 	}
 	waitFor(t, 3*time.Second, func() bool { return a.Snapshot().PhaseIndex == 1 })
-	waitFor(t, 3*time.Second, func() bool {
-		st, _ := a.StateForSeat("seat1")
-		return !st.PhaseDone
-	})
 }
 
 // Advancing is always triggered by a client frame, and a websocket request
@@ -193,7 +229,7 @@ func TestPhaseLoopOutlivesTheAdvancingRequest(t *testing.T) {
 
 	waitFor(t, 3*time.Second, func() bool {
 		st, ok := a.StateForSeat("seat1")
-		return ok && st.PhaseDone
+		return ok && st.Visible.Phase.Type == domain.PhaseOpening
 	})
 
 	// The opening phase is released by the host, whose request context ends

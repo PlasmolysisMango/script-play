@@ -576,9 +576,7 @@
       "content": "林堂尸体深入调查：\n尸体衣物中发现一个不明黑色金属物质，如有分子成分快速测试仪，则可继续获得深入调查线索10。\n\n（图：一块白色片状／尖角状碎片，边缘有一条亮线。）",
       "isPublic": false,
       "location": "如有分子成分快速测试仪，则可继续获得深入调查线索10。",
-      "requiresItems": [
-        "分子成分快速测试仪"
-      ],
+      "ownerRoleId": "r_luosu",
       "unlockedBy": [
         "c_m07"
       ]
@@ -590,6 +588,7 @@
       "kind": "深入调查",
       "content": "林堂尸体深入调查：\n尸体的右手是生化义肢，断口处微微缩陷，似乎是某种冻伤。\n\n（图：一只前臂与手的线稿，臂上有接缝、裂纹与手背上的短刻线。）",
       "isPublic": false,
+      "ownerRoleId": "r_anan",
       "unlockedBy": [
         "c_m07"
       ]
@@ -601,6 +600,7 @@
       "kind": "深入调查",
       "content": "林堂尸体深入调查：\n口唇、双手与衣物上都沾有蓝色不明物质，其中前胸衣物上浓度最高。\n\n（图：一个男性人体轮廓＋一件衬衣，右上角是分子结构图。）",
       "isPublic": false,
+      "ownerRoleId": "r_lisinan",
       "unlockedBy": [
         "c_m07"
       ]

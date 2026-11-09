@@ -91,6 +91,48 @@ func TestRandomSearchDrawsInsteadOfPicking(t *testing.T) {
 	waitEvent(t, actor, "seat2", "轮到你搜证")
 }
 
+// A random round whose pool runs dry mid-turn must retire the seat instead of
+// answering every further click with "本轮线索已被抽完".
+func TestRandomSearchEndsTurnWhenPoolRunsDry(t *testing.T) {
+	sc := fixtureScript()
+	sc.Phases[1].SearchMode = domain.SearchRandom
+	sc.Phases[1].CluePool = []string{"c1"}
+	sc.Phases[1].PerPlayerPick = 2
+	g := domain.NewGame("g1", "room1", "sc1", nil)
+	g.Seats = strategySeats("seat1", "seat2", "seat3")
+	g.PhaseIndex = 1 // search
+
+	actor := NewActor(g, sc, nil, nil, nil, ActorConfig{
+		FloorTimeout: 5 * time.Second,
+		AgentTimeout: 2 * time.Second,
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	go actor.Start(ctx)
+
+	waitEvent(t, actor, "seat1", "轮到你搜证")
+	if err := actor.Handle(ctx, "seat1", ClientMessage{Type: "search.draw"}); err != nil {
+		t.Fatalf("first draw: %v", err)
+	}
+	waitFor(t, 3*time.Second, func() bool { return drawnBy(actor.Snapshot(), "seat1") == 1 })
+
+	// The seat owed one more draw but the pool is empty: the turn and the whole
+	// phase close instead of leaving a live button behind.
+	waitFor(t, 3*time.Second, func() bool {
+		st, ok := actor.StateForSeat("seat1")
+		return ok && st.PhaseDone && st.Draw == 0
+	})
+	exhausted := 0
+	for _, ev := range actor.Snapshot().Events {
+		if strings.Contains(ev.Text, "本轮线索已被抽完") {
+			exhausted++
+		}
+	}
+	if exhausted != 1 {
+		t.Fatalf("exhaustion notice repeated %d times, want 1", exhausted)
+	}
+}
+
 // Host-assigned order: the phase parks until the host submits a full
 // permutation, and the engine walks that order afterwards.
 func TestHostAssignedOrderWaitsForHost(t *testing.T) {

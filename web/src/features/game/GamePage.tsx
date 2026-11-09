@@ -840,24 +840,29 @@ function PhaseActions({
   }
 
   if (phase?.type === 'vote') {
+    const spectator = state.visible.self.kind === 'spectator'
     return (
       <div className="rounded-xl border border-rose-500/30 bg-rose-500/5 p-3">
-        <p className="mb-2 text-xs text-rose-200">投票阶段：选出你认为的凶手，只能投一次</p>
-        <div className="flex flex-wrap gap-2">
-          {voteTargets.map((s) => (
-            <button
-              key={s.id}
-              type="button"
-              className="btn-ghost text-xs"
-              onClick={() => send({ type: 'vote.cast', roleId: s.roleId })}
-            >
-              投给 {s.roleName || s.displayName}
+        <p className="mb-2 text-xs text-rose-200">
+          {state.voted ? '你已投票，等待其他玩家…' : '投票阶段：选出你认为的凶手，只能投一次'}
+        </p>
+        {!state.voted && !spectator ? (
+          <div className="flex flex-wrap gap-2">
+            {voteTargets.map((s) => (
+              <button
+                key={s.id}
+                type="button"
+                className="btn-ghost text-xs"
+                onClick={() => send({ type: 'vote.cast', roleId: s.roleId })}
+              >
+                投给 {s.roleName || s.displayName}
+              </button>
+            ))}
+            <button type="button" className="btn-ghost text-xs" onClick={() => send({ type: 'vote.cast' })}>
+              弃权
             </button>
-          ))}
-          <button type="button" className="btn-ghost text-xs" onClick={() => send({ type: 'vote.cast' })}>
-            弃权
-          </button>
-        </div>
+          </div>
+        ) : null}
         <p className="mt-2 text-xs text-slate-500">已投票 {state.voteCount} 人 · 房主/观战者可以看到计票</p>
       </div>
     )
@@ -871,17 +876,17 @@ function PhaseActions({
           {myTurn
             ? state.floor?.kind === 'reply'
               ? `轮到你先回应${state.floor?.replyTo ? ` ${seatName(state.visible, state.floor.replyTo)}` : ''}：回答或直接说「不回应」。`
-              : '麦克风在你手上。'
+              : '麦克风在你手上：可以发言，或点「结束发言」交给下一位。'
             : state.talkOpen
               ? '自由讨论：想说话就排队，同一时刻只有一个人占麦。'
               : `讨论阶段：${orderSentence(phase.order)}`}
         </p>
-        {state.talkOpen ? (
+        {state.talkOpen || myTurn ? (
           <div className="flex flex-wrap gap-2">
             {myTurn ? (
               <>
                 <button type="button" className="btn-ghost text-xs" onClick={() => send({ type: 'speak.pass' })}>
-                  {state.floor?.kind === 'reply' ? '不回应' : '不发言'}
+                  {state.floor?.kind === 'reply' ? '不回应' : state.talkOpen ? '不发言' : '结束发言'}
                 </button>
                 {state.floor?.replyTo ? (
                   <button type="button" className="btn-ghost text-xs" onClick={() => onReplyPass(state.floor?.replyTo ?? '')}>
@@ -909,13 +914,35 @@ function PhaseActions({
 
   if (phase?.type === 'reading') {
     return (
-      <p className="text-xs text-slate-500">
-        点右上角「阅读剧本」读完自己的角色本，读完由主持人推进。
-      </p>
+      <div className="space-y-2">
+        <p className="text-xs text-slate-500">
+          点右上角「阅读剧本」读完自己的角色本，读完由主持人推进。
+        </p>
+        {isHost ? (
+          <button type="button" className="btn-primary text-xs" onClick={() => send({ type: 'host.skip' })}>
+            进入下一阶段
+          </button>
+        ) : null}
+      </div>
     )
   }
 
-  if (phase?.type === 'opening' || phase?.type === 'reveal') {
+  if (phase?.type === 'opening') {
+    // 开场不是过场：骰子提问一类的互动都发生在这里，服务端会一直保留本阶段，
+    // 直到主持人点「进入下一阶段」。
+    return (
+      <div className="space-y-2">
+        <p className="text-xs text-slate-500">开场互动中：可以自由发言；主持人准备好后进入下一阶段。</p>
+        {isHost ? (
+          <button type="button" className="btn-primary text-xs" onClick={() => send({ type: 'host.skip' })}>
+            进入下一阶段
+          </button>
+        ) : null}
+      </div>
+    )
+  }
+
+  if (phase?.type === 'reveal') {
     return <p className="text-xs text-slate-500">由主持人推进，你可以继续补充发言。</p>
   }
 

@@ -53,7 +53,7 @@ func TestHostAdvanceIsAnnouncedAsHostLine(t *testing.T) {
 	a := talkTable(t)
 	waitFor(t, 5*time.Second, func() bool {
 		st, ok := a.StateForSeat("seat1")
-		return ok && st.PhaseDone
+		return ok && st.Visible.Phase.Type == domain.PhaseOpening
 	})
 	mustHandle(t, a, "seat1", ClientMessage{Type: "host.skip"})
 
@@ -103,7 +103,7 @@ func openTalk(t *testing.T, a *Actor) {
 	t.Helper()
 	waitFor(t, 5*time.Second, func() bool {
 		st, ok := a.StateForSeat("seat1")
-		return ok && st.PhaseDone
+		return ok && st.Visible.Phase.Type == domain.PhaseOpening
 	})
 	mustHandle(t, a, "seat1", ClientMessage{Type: "host.skip"})
 

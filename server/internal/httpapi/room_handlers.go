@@ -553,6 +553,7 @@ func (s *Server) handleRoomState(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	u := currentUser(r)
 	seatID := r.URL.Query().Get("seatId")
 	if seatID == "" && rc.seat != nil {
 		seatID = rc.seat.ID
@@ -565,6 +566,13 @@ func (s *Server) handleRoomState(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusForbidden, errors.New("无权查看该座位状态"))
 		return
 	}
+	// Private state belongs to one seat. The host may inspect any seat to run the
+	// table, but a player (or spectator) must never read somebody else's role
+	// book just by putting another seat id in the query string.
+	if seatID != rc.seat.ID && rc.room.HostUserID != u.ID {
+		fail(w, http.StatusForbidden, errors.New("只能查看自己的座位状态"))
+		return
+	}
 	st, err := s.rooms.StateForSeat(rc.game.ID, seatID)
 	if err != nil {
 		fail(w, http.StatusNotFound, err)
@@ -572,7 +580,7 @@ func (s *Server) handleRoomState(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"state": st,
-		"room":  s.roomView(rc.room, rc.game, rc.rec, currentUser(r).ID),
+		"room":  s.roomView(rc.room, rc.game, rc.rec, u.ID),
 	})
 }
 
