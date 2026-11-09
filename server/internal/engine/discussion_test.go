@@ -204,6 +204,46 @@ func TestDeclineReleasesTheFloorAndOthersContinue(t *testing.T) {
 	})
 }
 
+// The scripted round is not a speech exam: the client's "结束发言" button sends
+// speak.pass, which must spend this seat's turn and hand the floor to the next
+// one instead of waiting out the clock.
+func TestScriptedTurnAcceptsPass(t *testing.T) {
+	a := talkTable(t)
+	waitFor(t, 5*time.Second, func() bool {
+		st, ok := a.StateForSeat("seat1")
+		return ok && st.Visible.Phase.Type == domain.PhaseOpening
+	})
+	mustHandle(t, a, "seat1", ClientMessage{Type: "host.skip"})
+	waitFor(t, 5*time.Second, func() bool {
+		return hasSystemEvent(a.Snapshot(), "seat1", "轮到你搜证")
+	})
+	mustHandle(t, a, "seat1", ClientMessage{Type: "host.skip"})
+
+	waitFor(t, 5*time.Second, func() bool {
+		f := floorOf(a, "seat1")
+		return f != nil && f.SeatID == "seat1"
+	})
+	mustHandle(t, a, "seat1", ClientMessage{Type: "speak.pass"})
+
+	waitFor(t, 3*time.Second, func() bool {
+		return hasSystemEvent(a.Snapshot(), "seat1", "暂时不发言")
+	})
+	waitFor(t, 5*time.Second, func() bool {
+		f := floorOf(a, "seat2")
+		return f != nil && f.SeatID == "seat2"
+	})
+	mustHandle(t, a, "seat2", ClientMessage{Type: "speak.text", Text: "我接着说他。"})
+	waitFor(t, 5*time.Second, func() bool {
+		f := floorOf(a, "seat3")
+		return f != nil && f.SeatID == "seat3"
+	})
+	mustHandle(t, a, "seat3", ClientMessage{Type: "speak.text", Text: "我也说完了。"})
+	waitFor(t, 5*time.Second, func() bool {
+		st, ok := a.StateForSeat("seat1")
+		return ok && st.TalkOpen
+	})
+}
+
 // Two seats may ask at the same time; only the head speaks, and the second one
 // keeps its words until it reaches the head.
 func TestQueueKeepsOneSpeakerAtATime(t *testing.T) {

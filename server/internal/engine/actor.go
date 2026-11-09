@@ -2799,6 +2799,17 @@ func (a *Actor) awaitSpeech(ctx context.Context, gen int, seat domain.Seat, ph *
 			switch msg.Type {
 			case "host.skip":
 				return false
+			case "speak.pass":
+				// The scripted round offers the same "结束发言" move as free
+				// talk: declining spends this seat's turn instead of leaving
+				// the table on a clock nobody can stop with the button.
+				a.mu.Lock()
+				if gen == a.phaseGen {
+					a.speech[seat.ID]++
+				}
+				a.mu.Unlock()
+				a.declined(seat, SpeechSlot{SeatID: seat.ID, Kind: SlotTurn})
+				return false
 			case "speak.text":
 				text := strings.TrimSpace(msg.Text)
 				if text == "" {
