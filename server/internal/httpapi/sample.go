@@ -28,9 +28,9 @@ const SampleScriptJSON = `{
   "phases": [
     {"id": "p1", "type": "reading", "name": "阅读剧本", "dmScript": "台风逼近，灯塔的灯灭了十分钟。第二天清晨，看守人老陈被发现倒在塔顶。先花时间读完自己的角色本，再开始自我介绍。"},
     {"id": "p2", "type": "discussion", "name": "自我介绍与案情讨论", "round": 1, "speechPerPlayer": 1, "order": "round_robin"},
-    {"id": "p3", "type": "search", "name": "第一轮搜证", "round": 1, "perPlayerPick": 2, "cluePool": ["c1", "c2", "c3", "c4", "c5"]},
+    {"id": "p3", "type": "search", "name": "第一轮搜证", "round": 1, "perPlayerPick": 2, "searchMode": "pick", "order": "round_robin", "cluePool": ["c1", "c2", "c3", "c4", "c5"]},
     {"id": "p4", "type": "discussion", "name": "第一轮公聊", "round": 1, "speechPerPlayer": 2, "order": "round_robin"},
-    {"id": "p5", "type": "search", "name": "第二轮搜证", "round": 2, "perPlayerPick": 1, "cluePool": ["c5", "c6"]},
+    {"id": "p5", "type": "search", "name": "第二轮搜证", "round": 2, "perPlayerPick": 1, "searchMode": "pick", "order": "round_robin", "cluePool": ["c5", "c6"]},
     {"id": "p6", "type": "discussion", "name": "第二轮公聊", "round": 2, "speechPerPlayer": 1, "order": "round_robin"},
     {"id": "p7", "type": "vote", "name": "投票"},
     {"id": "p8", "type": "reveal", "name": "复盘"}

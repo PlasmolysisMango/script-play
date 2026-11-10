@@ -18,6 +18,9 @@ export function LobbyPage() {
   const [allowSpectator, setAllowSpectator] = useState(true)
   const [speechSeconds, setSpeechSeconds] = useState(0)
   const [autoSkip, setAutoSkip] = useState(true)
+  // 固定人数本（几乎全部正式剧本）min == max，建局人再占一座就少一个人：
+  // 只当主持人时建局人以观战座位入房，把座位全部留给玩家。
+  const [hostOnly, setHostOnly] = useState(false)
   const [joinCode, setJoinCode] = useState('')
 
   const health = useQuery({ queryKey: ['health'], queryFn: api.health })
@@ -67,6 +70,7 @@ export function LobbyPage() {
         allowSpectator,
         speechSeconds,
         autoSkip,
+        hostOnly,
       })
     },
     onSuccess: (room) => {
@@ -183,6 +187,19 @@ export function LobbyPage() {
           <Field label="房间名" hint="留空则使用剧本名">
             <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="周五晚上的局" />
           </Field>
+          <Field
+            label="我的身份"
+            hint={
+              hostOnly
+                ? `只当主持人：不占玩家座位，${seatFixed ? `固定 ${seatMax} 座` : '座位数'}全留给玩家`
+                : '我也入座一起玩：主持人占 1 个玩家座位'
+            }
+          >
+            <select className="input" value={hostOnly ? 'host' : 'player'} onChange={(e) => setHostOnly(e.target.value === 'host')}>
+              <option value="player">我入座，一起玩</option>
+              <option value="host">只当主持人（不占座）</option>
+            </select>
+          </Field>
           <div className="grid grid-cols-2 gap-3">
             <Field label="座位数" hint={seatFixed ? `剧本固定 ${seatMax} 人` : `${seatMin}~${seatMax} 座（剧本人数范围）`}>
               <input
@@ -230,7 +247,7 @@ export function LobbyPage() {
             </Field>
           </div>
           <button type="button" className="btn-primary w-full" onClick={() => createRoom.mutate()} disabled={createRoom.isPending || published.length === 0}>
-            {createRoom.isPending ? '创建中…' : '创建房间并占座'}
+            {createRoom.isPending ? '创建中…' : hostOnly ? '创建房间（我只当主持人）' : '创建房间并占座'}
           </button>
         </div>
 

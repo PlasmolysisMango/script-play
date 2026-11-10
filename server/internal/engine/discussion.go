@@ -159,6 +159,10 @@ func (a *Actor) queueWantsLocked(speakerID, text string) {
 // The scripted round is only the opening statement: after it the phase no
 // longer ends by itself, the host decides. Meanwhile anybody may ask for the
 // floor, an answered seat answers first, and declining is a normal move.
+//
+// A table where nobody speaks must not pin the room: after DiscussIdle of
+// silence the floor closes and the walk moves on. Without that, an abandoned
+// discussion sat there for as long as the host's browser stayed open.
 func (a *Actor) freeTalk(ctx context.Context, gen int, ph *domain.Phase) {
 	wctx, stopWait := context.WithCancel(ctx)
 	defer stopWait()
@@ -172,11 +176,16 @@ func (a *Actor) freeTalk(ctx context.Context, gen int, ph *domain.Phase) {
 	a.waitCancel = stopWait
 	a.phaseDone = true
 	a.floor = nil
-	a.talkQueue = nil
+	// Requests typed during the scripted round stay queued: they were told they
+	// had a place in line, so dropping them here would make the table look deaf.
+	text := "进入自由讨论：想发言随时开口，同一时刻只有一个人说话；说完点「结束发言」把机会让给别人，主持人进入下一阶段时本阶段结束。"
+	if idle := a.cfg.DiscussIdle; idle > 0 {
+		text = fmt.Sprintf("进入自由讨论：想发言随时开口，同一时刻只有一个人说话；说完点「结束发言」把机会让给别人。主持人进入下一阶段时本阶段结束；连续 %d 秒无人发言会自动推进。", int(idle.Seconds()))
+	}
 	a.appendLocked(domain.Event{
 		Type:    domain.EvSystem,
 		PhaseID: ph.ID,
-		Text:    "进入自由讨论：想发言随时开口，同一时刻只有一个人说话；主持人说「进入下一阶段」才结束本阶段。",
+		Text:    text,
 	})
 	a.persistLocked()
 	a.mu.Unlock()
@@ -193,21 +202,80 @@ func (a *Actor) freeTalk(ctx context.Context, gen int, ph *domain.Phase) {
 		a.mu.Unlock()
 	}()
 
+	last := time.Now()
 	for {
 		if !a.alive(gen) || wctx.Err() != nil {
 			return
 		}
 		slot, ok := a.takeTalkSlot()
 		if !ok {
-			select {
-			case <-wctx.Done():
+			switch a.parkTalk(wctx, last) {
+			case talkStop:
 				return
-			case <-a.talkWake:
+			case talkIdle:
+				a.endIdleDiscussion(ctx, gen, ph)
+				return
 			}
 			continue
 		}
 		a.runTalk(ctx, gen, ph, slot)
+		last = time.Now()
 	}
+}
+
+// Outcomes of parkTalk.
+const (
+	talkWakeUp = iota // somebody asked for the floor
+	talkStop          // the phase moved on
+	talkIdle          // nobody has spoken for DiscussIdle
+)
+
+// parkTalk waits for the next request while the floor is idle.
+func (a *Actor) parkTalk(wctx context.Context, last time.Time) int {
+	idle := a.cfg.DiscussIdle
+	if idle <= 0 {
+		select {
+		case <-wctx.Done():
+			return talkStop
+		case <-a.talkWake:
+			return talkWakeUp
+		}
+	}
+	wait := time.Until(last.Add(idle))
+	if wait < 0 {
+		wait = 0
+	}
+	t := time.NewTimer(wait)
+	defer t.Stop()
+	select {
+	case <-wctx.Done():
+		return talkStop
+	case <-a.talkWake:
+		return talkWakeUp
+	case <-t.C:
+		return talkIdle
+	}
+}
+
+// endIdleDiscussion closes a floor nobody used and walks on, so a silent table
+// never becomes a zombie room holding a concurrency slot.
+func (a *Actor) endIdleDiscussion(ctx context.Context, gen int, ph *domain.Phase) {
+	a.mu.Lock()
+	if a.finished || gen != a.phaseGen {
+		a.mu.Unlock()
+		return
+	}
+	a.talkOpen = false
+	a.floor = nil
+	a.talkQueue = nil
+	a.appendLocked(domain.Event{
+		Type:    domain.EvSystem,
+		PhaseID: ph.ID,
+		Text:    fmt.Sprintf("连续 %d 秒无人发言，本阶段自动结束", int(a.cfg.DiscussIdle.Seconds())),
+	})
+	a.persistLocked()
+	a.mu.Unlock()
+	a.advance(ctx, gen)
 }
 
 func (a *Actor) runTalk(ctx context.Context, gen int, ph *domain.Phase, slot SpeechSlot) {
@@ -278,9 +346,24 @@ func (a *Actor) humanTalk(ctx context.Context, gen int, seat domain.Seat, ph *do
 	if timer != nil {
 		defer timer.Stop()
 	}
+	gone, stopGone := a.goneWatcher(seat.ID)
+	defer stopGone()
 	for {
 		select {
 		case <-wctx.Done():
+			return false
+		case <-gone:
+			a.mu.Lock()
+			if gen == a.phaseGen {
+				a.appendLocked(domain.Event{
+					Type:    domain.EvSystem,
+					PhaseID: ph.ID,
+					SeatID:  seat.ID,
+					Text:    fmt.Sprintf("%s 已离线，把发言机会让给了别人", a.speakerLocked(seat)),
+				})
+				a.persistLocked()
+			}
+			a.mu.Unlock()
 			return false
 		case <-expired:
 			a.mu.Lock()

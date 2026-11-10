@@ -70,6 +70,16 @@ type ActorConfig struct {
 	// steps straight into the next one. Rooms are host-driven by default: a phase
 	// ends with a "waiting for host" gate the host must release.
 	AutoAdvance bool
+	// Presence tells whether a seat still holds a live socket. A nil value (tests,
+	// replay, headless runs) means "assume everybody is here".
+	Presence func(seatID string) bool
+	// DiscussIdle ends an open discussion nobody has spoken in for this long.
+	// Zero disables the timer, which is what the old behaviour amounted to: the
+	// phase sat there until the host clicked, however long that took.
+	DiscussIdle time.Duration
+	// ReadingMin is the least time a reading/opening scene stays on screen,
+	// so a host mashing "next" cannot skip the role books entirely.
+	ReadingMin time.Duration
 }
 
 func (c ActorConfig) floor() time.Duration {
@@ -94,6 +104,47 @@ func (c ActorConfig) deadline() (*time.Timer, <-chan time.Time) {
 	}
 	t := time.NewTimer(c.floor())
 	return t, t.C
+}
+
+// presenceGrace is how long a disconnected seat keeps its turn before the
+// engine plays its hand for it. Short enough to rescue a stuck table, long
+// enough to survive a page reload.
+const presenceGrace = 20 * time.Second
+
+// goneWatcher returns a channel that fires once the seat has been without a
+// socket for presenceGrace. Without it a browser that closed on its turn kept
+// the whole table waiting on a prompt nobody would ever answer.
+func (a *Actor) goneWatcher(seatID string) (<-chan struct{}, func()) {
+	if a.cfg.Presence == nil {
+		return nil, func() {}
+	}
+	out := make(chan struct{}, 1)
+	stop := make(chan struct{})
+	go func() {
+		t := time.NewTicker(5 * time.Second)
+		defer t.Stop()
+		var gone time.Duration
+		for {
+			select {
+			case <-stop:
+				return
+			case <-t.C:
+				if a.cfg.Presence(seatID) {
+					gone = 0
+					continue
+				}
+				gone += 5 * time.Second
+				if gone >= presenceGrace {
+					select {
+					case out <- struct{}{}:
+					default:
+					}
+					return
+				}
+			}
+		}
+	}()
+	return out, func() { close(stop) }
 }
 
 // Actor owns one game. Every mutation happens under mu; LLM calls happen
@@ -181,6 +232,9 @@ type Actor struct {
 	phaseGen   int
 	started    bool
 	finished   bool
+	// phaseAt is when the current phase opened; reading/opening use it to
+	// enforce their minimum stay.
+	phaseAt time.Time
 
 	// done is closed once the game ends, so the room manager can free the
 	// concurrency slot instead of keeping a finished actor forever.
@@ -503,6 +557,13 @@ func (a *Actor) Handle(ctx context.Context, seatID string, msg ClientMessage) er
 	phase := a.m.Current(a.g)
 	a.mu.Unlock()
 
+	// Spectators watch; they never take the floor. Voting and whispering already
+	// say so, and the host-only creator sits in a spectator seat: their commands
+	// are the host's (skip/end/grant), never a player's line.
+	if seat.Kind == domain.SeatSpectator && (msg.Type == "speak.text" || msg.Type == "speak.request") {
+		return ErrNotAllowed{Reason: "观战者不能发言"}
+	}
+
 	switch msg.Type {
 	case "ping":
 		return nil
@@ -510,7 +571,17 @@ func (a *Actor) Handle(ctx context.Context, seatID string, msg ClientMessage) er
 		if !seat.IsHost {
 			return ErrNotAllowed{Reason: "只有主持人可以跳过"}
 		}
-		a.requestAdvance(ctx)
+		return a.requestAdvance(ctx)
+	case "host.end":
+		// The host's way out of a table that cannot reach its own ending — a
+		// play/score script with no reveal phase used to stay running (and hold
+		// its concurrency slot) forever.
+		if !seat.IsHost {
+			return ErrNotAllowed{Reason: "只有主持人可以结束对局"}
+		}
+		a.mu.Lock()
+		a.finishLocked("主持人结束了本局")
+		a.mu.Unlock()
 		return nil
 	case "search.grant":
 		// The printed acting bonus: the host may hand one extra draw to a seat.
@@ -559,8 +630,9 @@ func (a *Actor) Handle(ctx context.Context, seatID string, msg ClientMessage) er
 		a.appendSpeechTo(*seat, text, msg.ReplyTo)
 		return nil
 	case "speak.pass":
-		// Declining without holding the floor is a no-op: the seat simply has
-		// nothing queued, and an error frame here would be noise.
+		// Declining while queued gives the slot back. Outside a discussion
+		// there is nothing to decline, and an error frame would just be noise.
+		a.dropQueuedTalk(*seat)
 		return nil
 	case "search.pass":
 		return ErrNotAllowed{Reason: "轮到你搜证时才能结束本轮"}
@@ -592,7 +664,7 @@ func (a *Actor) Handle(ctx context.Context, seatID string, msg ClientMessage) er
 // requestFloor puts a seat at the end of the discussion queue.
 func (a *Actor) requestFloor(seat domain.Seat) error {
 	a.mu.Lock()
-	if !a.talkOpen {
+	if !a.talkOpen && !a.discussionLocked() {
 		a.mu.Unlock()
 		return ErrNotAllowed{Reason: "现在不是自由讨论，轮到你时再发言"}
 	}
@@ -608,11 +680,34 @@ func (a *Actor) requestFloor(seat domain.Seat) error {
 	return nil
 }
 
+// discussionLocked reports whether the current phase is a discussion. The
+// scripted round still counts: a request typed before the open floor starts is
+// queued rather than rejected, which is what left the table waiting on a floor
+// nobody could take.
+func (a *Actor) discussionLocked() bool {
+	ph := a.m.Current(a.g)
+	return !a.finished && ph != nil && ph.Type == domain.PhaseDiscussion
+}
+
+// dropQueuedTalk removes a seat from the speaking queue when it changes its
+// mind, so a withdrawn request cannot keep the floor waiting.
+func (a *Actor) dropQueuedTalk(seat domain.Seat) {
+	a.mu.Lock()
+	idx := a.talkIndexOfLocked(seat.ID)
+	if idx < 0 {
+		a.mu.Unlock()
+		return
+	}
+	a.talkQueue = append(a.talkQueue[:idx], a.talkQueue[idx+1:]...)
+	a.mu.Unlock()
+	a.declined(seat, SpeechSlot{SeatID: seat.ID, Kind: SlotRequest})
+}
+
 // holdTalk queues a line typed while somebody else holds the floor. It reports
 // whether the text was queued, so the caller knows not to speak immediately.
 func (a *Actor) holdTalk(seat domain.Seat, text, replyTo string) bool {
 	a.mu.Lock()
-	if !a.talkOpen {
+	if !a.talkOpen && !a.discussionLocked() {
 		a.mu.Unlock()
 		return false
 	}
@@ -620,7 +715,7 @@ func (a *Actor) holdTalk(seat domain.Seat, text, replyTo string) bool {
 		a.mu.Unlock()
 		return false
 	}
-	busy := a.floor != nil
+	busy := a.floor != nil || !a.talkOpen
 	queued := a.talkIndexOfLocked(seat.ID) >= 0
 	if !busy && !queued {
 		// Nobody holds the floor and this seat is not waiting: it is its turn
@@ -713,6 +808,7 @@ func (a *Actor) beginPhase(ctx context.Context) {
 	if strings.TrimSpace(ph.DMScript) != "" {
 		a.appendLocked(domain.Event{Type: domain.EvDM, Speaker: "主持人", PhaseID: ph.ID, Text: ph.DMScript})
 	}
+	a.phaseAt = time.Now()
 	// 「××专属线索」不等搜证：进入阶段就交到主人手里，牌堆里根本没有它。
 	a.dealPrivateCluesLocked(ph)
 	// 恩宠结算段（K12「水落石出」）：先把分数摆到桌面，再算废后与冷宫。
@@ -821,12 +917,28 @@ func (a *Actor) advance(ctx context.Context, gen int) {
 	a.beginPhase(a.phaseCtx(ctx))
 }
 
-func (a *Actor) requestAdvance(ctx context.Context) {
+func (a *Actor) requestAdvance(ctx context.Context) error {
 	a.mu.Lock()
 	gen := a.phaseGen
+	// Reading and opening are the only scenes with a floor: the role book has to
+	// stay on screen long enough to be read, so a host clicking "next" twice in
+	// a row cannot skip the whole act.
+	if ph := a.m.Current(a.g); ph != nil && (ph.Type == domain.PhaseReading || ph.Type == domain.PhaseOpening) {
+		min := a.cfg.ReadingMin
+		if ph.TimeoutSec > 0 {
+			min = time.Duration(ph.TimeoutSec) * time.Second
+		}
+		if min > 0 {
+			if left := min - time.Since(a.phaseAt); left > 0 {
+				a.mu.Unlock()
+				return ErrNotAllowed{Reason: fmt.Sprintf("阅读阶段还剩 %d 秒，稍后再进入下一阶段", int(left.Seconds())+1)}
+			}
+		}
+	}
 	a.floor = nil
 	a.mu.Unlock()
 	a.advance(ctx, gen)
+	return nil
 }
 
 // cancelWaiterLocked releases the pending waiter (if any). Callers hold mu:
@@ -1542,9 +1654,20 @@ func (a *Actor) awaitSearch(ctx context.Context, gen int, seat domain.Seat, ph *
 	if timer != nil {
 		defer timer.Stop()
 	}
+	gone, stopGone := a.goneWatcher(seat.ID)
+	defer stopGone()
 	for {
 		select {
 		case <-ctx.Done():
+			return false
+		case <-gone:
+			a.mu.Lock()
+			if gen == a.phaseGen {
+				a.searched[seat.ID]++
+				a.appendLocked(domain.Event{Type: domain.EvSystem, SeatID: seat.ID, Visibility: SeatVisibility(seat.ID), Text: "搜证时已离线，自动跳过"})
+				a.persistLocked()
+			}
+			a.mu.Unlock()
 			return false
 		case <-expired:
 			a.mu.Lock()
@@ -2765,9 +2888,20 @@ func (a *Actor) awaitSpeech(ctx context.Context, gen int, seat domain.Seat, ph *
 	// expired stays nil when the room runs unlimited or asked to wait for the
 	// host: the select then parks on the message channel until the phase is
 	// advanced, and cancelWaiterLocked releases it if the host moves on.
+	gone, stopGone := a.goneWatcher(seat.ID)
+	defer stopGone()
 	for {
 		select {
 		case <-wctx.Done():
+			return false
+		case <-gone:
+			a.mu.Lock()
+			if gen == a.phaseGen && !a.finished {
+				a.speech[seat.ID]++
+				a.appendLocked(domain.Event{Type: domain.EvSystem, PhaseID: ph.ID, SeatID: seat.ID, Text: fmt.Sprintf("%s 已离线，跳过其发言", a.speakerLocked(seat))})
+				a.persistLocked()
+			}
+			a.mu.Unlock()
 			return false
 		case <-expired:
 			if a.cfg.WaitForHost {
@@ -3085,9 +3219,14 @@ func (a *Actor) awaitVote(ctx context.Context, gen int, seat domain.Seat) bool {
 	if timer != nil {
 		defer timer.Stop()
 	}
+	gone, stopGone := a.goneWatcher(seat.ID)
+	defer stopGone()
 	for {
 		select {
 		case <-ctx.Done():
+			return false
+		case <-gone:
+			a.recordVote(seat, "")
 			return false
 		case <-expired:
 			a.recordVote(seat, "")
@@ -3292,7 +3431,7 @@ func (a *Actor) runReveal() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	idx := a.sc.Tokenize()
-	killer := a.sc.Truth.KillerRoleID
+	killers := a.sc.Truth.Killers()
 	summary := a.sc.Truth.Summary
 	if summary == "" {
 		summary = a.sc.Truth.Method
@@ -3300,17 +3439,34 @@ func (a *Actor) runReveal() {
 	// 空 killerRoleId 表示真凶不是在场玩家（K18 的食堂帮工阿飞）。此时真相
 	// 只能由 summary 交代，不能再拼一句「凶手是 」。
 	text := "真相揭晓：" + summary
-	if killer != "" {
-		killerName := killer
-		if r := idx.RoleByID(killer); r != nil {
+	if len(killers) == 1 {
+		killerName := killers[0]
+		if r := idx.RoleByID(killers[0]); r != nil {
 			killerName = r.Name
 		}
 		text = fmt.Sprintf("真相揭晓：凶手是 %s。%s", killerName, summary)
+	} else if len(killers) > 1 {
+		// 多案本（K27 女帝攻略的三桩命案各有一个真凶）：只念一个人的名字会让
+		// 投对了另一案的玩家以为自己错了。
+		names := make([]string, 0, len(killers))
+		for _, id := range killers {
+			name := id
+			if r := idx.RoleByID(id); r != nil {
+				name = r.Name
+			}
+			names = append(names, name)
+		}
+		text = fmt.Sprintf("真相揭晓：本案共有 %d 名凶手——%s。%s", len(names), strings.Join(names, "、"), summary)
+	}
+	meta := map[string]string{}
+	if len(killers) > 0 {
+		meta["killerRoleId"] = killers[0]
+		meta["killerRoleIds"] = strings.Join(killers, ",")
 	}
 	a.appendLocked(domain.Event{
 		Type: domain.EvReveal,
 		Text: text,
-		Meta: map[string]string{"killerRoleId": killer},
+		Meta: meta,
 	})
 	a.persistLocked()
 }

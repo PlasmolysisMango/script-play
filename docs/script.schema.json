@@ -139,7 +139,15 @@
       ],
       "properties": {
         "killerRoleId": {
-          "type": "string"
+          "type": "string",
+          "description": "主案凶手。多案剧本（如女帝攻略）仍填主案凶手，其余凶手放进 killerRoleIds。"
+        },
+        "killerRoleIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "全部凶手角色：多案/多凶手剧本把每个有罪的角色都写上，揭晓时逐个点名；不填则只用 killerRoleId。"
         },
         "method": {
           "type": "string"
@@ -213,7 +221,7 @@
             "random",
             ""
           ],
-          "description": "搜证方式：pick 由玩家自选，random 由玩家点「随机抽取」逐条抽（隐藏线索标题）。"
+          "description": "搜证方式：pick 由玩家自选，random 由玩家点「随机抽取」逐条抽（隐藏线索标题）。留空按 pick 运行，但本仓库的剧本都显式写明，别让策略藏在默认值里。"
         },
         "order": {
           "enum": [

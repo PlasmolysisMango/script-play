@@ -141,6 +141,8 @@ export type TranscriptLine = z.infer<typeof transcriptLineSchema>
 
 export const truthSchema = z.object({
   killerRoleId: z.string().optional().default(''),
+  /** 多案/多凶手剧本：揭晓时按这个列表逐个点名。 */
+  killerRoleIds: z.array(z.string()).nullish().transform((v) => v ?? []),
   method: z.string().optional().default(''),
   motive: z.string().optional().default(''),
   timeline: z.array(z.string()).nullish().transform((v) => v ?? []),

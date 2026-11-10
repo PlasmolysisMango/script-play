@@ -401,9 +401,16 @@ func (a *Actor) awaitPlay(ctx context.Context, gen int, seat domain.Seat) {
 	if timer != nil {
 		defer timer.Stop()
 	}
+	gone, stopGone := a.goneWatcher(seat.ID)
+	defer stopGone()
 	for {
 		select {
 		case <-ctx.Done():
+			return
+		case <-gone:
+			// The turn seat closed its browser. The rest of the table has no legal
+			// move, so the engine plays the hand out instead of waiting forever.
+			a.autoPlay(seat, "你已离线，系统自动出了这一手")
 			return
 		case <-expired:
 			a.autoPlay(seat, "出牌超时，自动处理")
@@ -1153,9 +1160,14 @@ func (a *Actor) awaitScore(ctx context.Context, gen int, seat domain.Seat) {
 	if timer != nil {
 		defer timer.Stop()
 	}
+	gone, stopGone := a.goneWatcher(seat.ID)
+	defer stopGone()
 	for {
 		select {
 		case <-ctx.Done():
+			return
+		case <-gone:
+			a.submitScore(seat, domain.CardAnswer{Guesses: map[string]string{}})
 			return
 		case <-expired:
 			a.submitScore(seat, domain.CardAnswer{Guesses: map[string]string{}})

@@ -673,6 +673,7 @@
     {
       "id": "p3",
       "type": "search",
+      "searchMode": "pick",
       "name": "第二步·第一轮搜证：瀚海远征",
       "round": 1,
       "perPlayerPick": 4,
@@ -713,6 +714,7 @@
     {
       "id": "p5",
       "type": "search",
+      "searchMode": "random",
       "name": "第四步·第二轮搜证：迷航疑云",
       "round": 2,
       "perPlayerPick": 4,
@@ -753,6 +755,7 @@
     {
       "id": "p7",
       "type": "search",
+      "searchMode": "random",
       "name": "第六步·第三轮搜证：星火再临",
       "round": 3,
       "perPlayerPick": 3,

@@ -82,6 +82,24 @@ type Limits struct {
 	// AutoAdvance skips the host gate between phases. It exists for scripted
 	// tests and unattended demos; real tables wait for the host's click.
 	AutoAdvance bool
+	// DiscussIdle ends the free-chat stage after this long without a single
+	// line typed by anyone. The runbook assumed the host would always click
+	// “next”; an abandoned table then sat on the discussion phase forever and
+	// kept its room slot. Zero disables the timer.
+	DiscussIdle time.Duration
+	// AbandonIdle reclaims a running game whose seats have had no live
+	// WebSocket for this long. Without it a browser that simply closed left an
+	// actor behind that never finished, and SP_MAX_ROOMS filled up with dead
+	// games that start-ups kept answering 409 for.
+	AbandonIdle time.Duration
+	// GameMax is a hard ceiling on one game's wall-clock lifetime. It is the
+	// last line of defence: even a table that stays connected gets closed with
+	// a readable reason instead of pinning a slot for days. Zero disables it.
+	GameMax time.Duration
+	// ReadingMin is the floor for reading/opening phases, which are otherwise
+	// skipped instantly by a click. It keeps the story readable even when the
+	// whole table mashes the advance button.
+	ReadingMin time.Duration
 }
 
 // Load reads the environment, creating a JWT secret on first run.
@@ -146,6 +164,10 @@ func Load() (*Config, error) {
 			// that large or the proxy answers 413 first.
 			MaxUploadBytes: int64(envInt("SP_MAX_UPLOAD_MB", 256)) << 20,
 			AutoAdvance:    envBool("SP_AUTO_ADVANCE", false),
+			DiscussIdle:    time.Duration(envInt("SP_DISCUSSION_IDLE_SEC", 120)) * time.Second,
+			AbandonIdle:    time.Duration(envInt("SP_ABANDON_IDLE_SEC", 600)) * time.Second,
+			GameMax:        time.Duration(envInt("SP_GAME_MAX_MIN", 480)) * time.Minute,
+			ReadingMin:     time.Duration(envInt("SP_READING_MIN_SEC", 15)) * time.Second,
 		},
 	}
 	return cfg, nil

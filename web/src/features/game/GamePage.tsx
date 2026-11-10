@@ -279,6 +279,19 @@ export function GamePage({ code }: { code: string }) {
             >
               {voiceLabel(voice, tts)}
             </button>
+           {isHost && state.status === 'running' ? (
+              <button
+                type="button"
+                className="btn-ghost text-xs text-rose-300 hover:text-rose-200"
+                onClick={() => {
+                  // A play/score script has no reveal phase of its own, so the table
+                  // can only leave "running" through the host's explicit ending.
+                  if (window.confirm('结束本局？牌桌会立即停下并释放名额，所有人仍能看复盘。')) send({ type: 'host.end' })
+                }}
+              >
+                结束对局
+              </button>
+            ) : null}
             <button type="button" className="btn-ghost text-xs" onClick={() => navigate('room', code)}>
               房间
             </button>

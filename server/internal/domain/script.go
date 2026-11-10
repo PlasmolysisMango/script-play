@@ -108,11 +108,37 @@ type CountRange struct {
 
 // Truth is the solution of the case. It must never reach an agent prompt.
 type Truth struct {
-	KillerRoleID string   `json:"killerRoleId"`
-	Method       string   `json:"method,omitempty"`
-	Motive       string   `json:"motive,omitempty"`
-	Timeline     []string `json:"timeline,omitempty"`
-	Summary      string   `json:"summary,omitempty"`
+	KillerRoleID string `json:"killerRoleId"`
+	// KillerRoleIDs lists every guilty role for scripts that tell more than one
+	// case in a single game (K27《女帝攻略》has three separate murders, so a
+	// single killerRoleId forced the reveal to announce the wrong person). The
+	// singular field above stays the common case and is always included.
+	KillerRoleIDs []string `json:"killerRoleIds,omitempty"`
+	Method        string   `json:"method,omitempty"`
+	Motive        string   `json:"motive,omitempty"`
+	Timeline      []string `json:"timeline,omitempty"`
+	Summary       string   `json:"summary,omitempty"`
+}
+
+// Killers returns every guilty role, in declaration order and without repeats.
+func (t Truth) Killers() []string {
+	out := make([]string, 0, len(t.KillerRoleIDs)+1)
+	add := func(id string) {
+		if id == "" {
+			return
+		}
+		for _, seen := range out {
+			if seen == id {
+				return
+			}
+		}
+		out = append(out, id)
+	}
+	add(t.KillerRoleID)
+	for _, id := range t.KillerRoleIDs {
+		add(id)
+	}
+	return out
 }
 
 // Phase is one step of the game flow.

@@ -63,6 +63,39 @@ export function RoomPage({ code }: { code: string }) {
     },
     onError,
   })
+  // 退座：大厅里把座位交回去；如果我是最后一个人，服务端连房间一起删。
+  const leave = useMutation({
+    mutationFn: () => api.leaveRoom(code),
+    onSuccess: (res) => {
+      queryClient.invalidateQueries({ queryKey: ['rooms'] })
+      notify(res.closed ? '你是最后一个人，房间已解散' : '已离开座位')
+      navigate('lobby')
+    },
+    onError,
+  })
+  // 关房：大厅直接删，进行中的对局就地结束（复盘保留）。
+  const close = useMutation({
+    mutationFn: () => api.closeRoom(code),
+    onSuccess: (res) => {
+      queryClient.invalidateQueries({ queryKey: ['rooms'] })
+      if (res.deleted) {
+        notify('房间已解散')
+        navigate('lobby')
+        return
+      }
+      if (res.room) applyRoom(res.room)
+      notify('本局已结束，回放仍可查看')
+    },
+    onError,
+  })
+  const transfer = useMutation({
+    mutationFn: (seatId: string) => api.transferHost(code, seatId),
+    onSuccess: (next) => {
+      applyRoom(next)
+      notify('已把主持权交出去')
+    },
+    onError,
+  })
 
   if (roomQuery.isLoading) return <Spinner label="正在读取房间…" />
   if (!room) return <Empty>房间不存在，或你的账号无权查看。</Empty>
@@ -75,6 +108,12 @@ export function RoomPage({ code }: { code: string }) {
   const unclaimed = Math.min(freeRoles.length, freeSeats)
   const canAddAgent = room.host && room.status === 'lobby' && players.length < room.maxSeats
   const canStart = room.host && room.status === 'lobby' && players.length >= 2
+  // 能接手主持的必须是有账号的真人座位；AI 与观战不行。
+  const heirSeats = room.seats.filter((s) => s.kind === 'human' && s.id !== room.mySeatId)
+  // 准备是自愿的，但只要有一个人打了勾，服务端就会卡住没准备的玩家：
+  // 这里提前把名字列出来，主持人不用等一次 409 才知道。
+  const unready = room.seats.filter((s) => s.kind === 'human' && !s.isHost && !s.ready)
+  const readyGate = unready.length > 0 && room.seats.some((s) => s.kind === 'human' && !s.isHost && s.ready)
 
   return (
     <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_340px]">
@@ -120,6 +159,18 @@ export function RoomPage({ code }: { code: string }) {
               {mySeat ? (
                 <button type="button" className="btn-primary text-xs" onClick={() => navigate('game', code)}>
                   进入牌桌
+                </button>
+              ) : null}
+              {room.status === 'running' && room.host ? (
+                <button
+                  type="button"
+                  className="btn-ghost text-xs"
+                  disabled={close.isPending}
+                  onClick={() => {
+                    if (window.confirm('结束本局？牌桌会立即停下，但所有人仍能看复盘。')) close.mutate()
+                  }}
+                >
+                  结束对局
                 </button>
               ) : null}
               {room.status === 'finished' && room.host ? (
@@ -173,11 +224,13 @@ export function RoomPage({ code }: { code: string }) {
                 {start.isPending ? '开局中…' : '开始游戏'}
               </button>
               <span className="text-xs text-slate-500">
-                {players.length < 2
-                  ? '至少需要 2 个玩家座位（真人或 AI）'
-                  : unclaimed > 0
-                    ? `还有 ${unclaimed} 个角色没人认领（空座 ${freeSeats} 个），开局时会按加入顺序自动分配`
-                    : '所有角色已就位'}
+                {readyGate
+                  ? `还有玩家没准备：${unready.map((s) => s.displayName).join('、')}`
+                  : players.length < 2
+                    ? '至少需要 2 个玩家座位（真人或 AI）'
+                    : unclaimed > 0
+                      ? `还有 ${unclaimed} 个角色没人认领（空座 ${freeSeats} 个），开局时会按加入顺序自动分配`
+                      : '所有角色已就位'}
               </span>
             </div>
           ) : null}
@@ -239,8 +292,65 @@ export function RoomPage({ code }: { code: string }) {
             <button type="button" className="btn-ghost w-full" onClick={() => navigate('lobby')}>
               回到大厅
             </button>
+            {room.status === 'lobby' ? (
+              <button
+                type="button"
+                className="btn-ghost w-full text-xs text-rose-300 hover:text-rose-200"
+                disabled={leave.isPending}
+                onClick={() => {
+                  const line = room.host
+                    ? '离开房间？主持权会交给下一位真人玩家；如果这里只剩你一个人，房间会被直接解散。'
+                    : '离开房间？你的座位会空出来给其他人。'
+                  if (window.confirm(line)) leave.mutate()
+                }}
+              >
+                {leave.isPending ? '离开中…' : '离开房间'}
+              </button>
+            ) : null}
           </div>
         )}
+
+        {room.host && room.status === 'lobby' ? (
+          <div className="card space-y-3">
+            <SectionTitle aside={<span className="text-xs text-slate-500">大厅里才能交接</span>}>主持人选项</SectionTitle>
+            <Field
+              label="转让主持"
+              hint={
+                heirSeats.length === 0
+                  ? '还没有其他真人玩家入座；他们用房号进来后就能接手。'
+                  : '交接后你变成普通玩家，对局开始后不能再改回来。'
+              }
+            >
+              <select
+                className="input"
+                value=""
+                disabled={heirSeats.length === 0 || transfer.isPending}
+                onChange={(e) => {
+                  const seatId = e.target.value
+                  if (!seatId) return
+                  if (window.confirm('把主持权交给这位玩家？之后你就只是普通玩家了。')) transfer.mutate(seatId)
+                }}
+              >
+                <option value="">{heirSeats.length === 0 ? '（暂无可接手的真人座位）' : '选择接手的玩家'}</option>
+                {heirSeats.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {`${s.displayName}${s.roleName ? ` · ${s.roleName}` : ''}`}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <button
+              type="button"
+              className="btn-ghost w-full text-xs text-rose-300 hover:text-rose-200"
+              disabled={close.isPending}
+              onClick={() => {
+                if (window.confirm('解散房间？房间会立刻删除，所有人被请出，房间号作废。')) close.mutate()
+              }}
+            >
+              {close.isPending ? '解散中…' : '解散房间'}
+            </button>
+          </div>
+        ) : null}
 
         <div className="sheet">
           <SectionTitle>角色卡</SectionTitle>

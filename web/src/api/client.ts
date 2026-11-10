@@ -247,6 +247,8 @@ export const api = {
     allowSpectator?: boolean
     speechSeconds?: number
     autoSkip?: boolean
+    /** 只当主持人：不占玩家座位，座位数恰好等于剧本人数。 */
+    hostOnly?: boolean
   }): Promise<Room> {
     return withRoom(await request('/api/rooms', { method: 'POST', body: JSON.stringify(body) }))
   },
@@ -277,6 +279,29 @@ export const api = {
   },
   async startRoom(code: string): Promise<Room> {
     return withRoom(await request(`/api/rooms/${code}/start`, { method: 'POST' }))
+  },
+  /**
+   * 退座。主持人在 lobby 里离开时会把主持权交给下一位真人；如果他是最后一个人，
+   * 服务端直接把房间删掉，响应里的 closed 为 true。
+   */
+  async leaveRoom(code: string): Promise<{ room?: Room; closed: boolean }> {
+    const res = await request<{ room?: unknown; closed?: boolean }>(`/api/rooms/${code}/leave`, { method: 'POST' })
+    return { room: res.room ? roomSchema.parse(res.room) : undefined, closed: res.closed ?? false }
+  },
+  /** 主持人关房：大厅房直接删除，进行中的对局就地结束（回放保留）。 */
+  async closeRoom(code: string): Promise<{ room?: Room; closed: boolean; deleted: boolean }> {
+    const res = await request<{ room?: unknown; closed?: boolean; deleted?: boolean }>(`/api/rooms/${code}/close`, {
+      method: 'POST',
+    })
+    return {
+      room: res.room ? roomSchema.parse(res.room) : undefined,
+      closed: res.closed ?? false,
+      deleted: res.deleted ?? false,
+    }
+  },
+  /** 大厅里把主持权交给另一名真人。 */
+  async transferHost(code: string, seatId: string): Promise<Room> {
+    return withRoom(await request(`/api/rooms/${code}/host`, { method: 'POST', body: JSON.stringify({ seatId }) }))
   },
   /** Short-lived ticket that binds one websocket to this account's seat. */
   async seatTicket(code: string): Promise<{ ticket: string; seatId: string; expiresAt: string }> {

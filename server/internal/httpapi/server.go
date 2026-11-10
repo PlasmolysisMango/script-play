@@ -101,6 +101,12 @@ func (s *Server) routes() {
 	m.HandleFunc("PATCH /api/rooms/{code}/seats/{seatId}", s.withAuth(s.handlePatchSeat))
 	m.HandleFunc("DELETE /api/rooms/{code}/seats/{seatId}", s.withAuth(s.handleDeleteSeat))
 	m.HandleFunc("POST /api/rooms/{code}/start", s.withAuth(s.handleStartRoom))
+	// The host's own lifecycle controls: give up a seat, end a game that
+	// cannot finish itself, hand the table over. Without them a normal user
+	// had no way to release a stuck room (only admins could).
+	m.HandleFunc("POST /api/rooms/{code}/leave", s.withAuth(s.handleLeaveRoom))
+	m.HandleFunc("POST /api/rooms/{code}/close", s.withAuth(s.handleCloseRoom))
+	m.HandleFunc("POST /api/rooms/{code}/host", s.withAuth(s.handleTransferHost))
 	m.HandleFunc("GET /api/rooms/{code}/seat-ticket", s.withAuth(s.handleSeatTicket))
 	m.HandleFunc("GET /api/rooms/{code}/state", s.withAuth(s.handleRoomState))
 	m.HandleFunc("GET /api/rooms/{code}/replay", s.withAuth(s.handleReplay))
@@ -243,6 +249,7 @@ func fileExists(root, urlPath string) bool {
 // ---- basic handlers ----
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	running, max := s.rooms.Running()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":        true,
 		"time":      time.Now().UTC(),
@@ -252,6 +259,14 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		// without reading SP_FLOOR_TIMEOUT_SEC.
 		"floorTimeoutSec": int(s.cfg.Limits.FloorTimeout / time.Second),
 		"agentTimeoutSec": int(s.cfg.Limits.AgentTimeout / time.Second),
+		// Capacity and the automatic-reclaim timeouts, so an operator can see why
+		// a start was refused and when an abandoned table frees its slot.
+		"maxRooms":          max,
+		"runningRooms":      running,
+		"discussionIdleSec": int(s.cfg.Limits.DiscussIdle / time.Second),
+		"abandonIdleSec":    int(s.cfg.Limits.AbandonIdle / time.Second),
+		"gameMaxMin":        int(s.cfg.Limits.GameMax / time.Minute),
+		"readingMinSec":     int(s.cfg.Limits.ReadingMin / time.Second),
 	})
 }
 

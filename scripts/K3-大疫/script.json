@@ -73,6 +73,7 @@
     {
       "id": "p3_search_1",
       "type": "search",
+      "searchMode": "pick",
       "name": "第三步·第一轮搜证（10 分钟）",
       "round": 1,
       "order": "round_robin",
@@ -168,6 +169,7 @@
     {
       "id": "p6_search_2",
       "type": "search",
+      "searchMode": "pick",
       "name": "第六步·第二轮搜证（10 分钟）",
       "round": 2,
       "order": "round_robin",

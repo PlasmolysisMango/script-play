@@ -149,6 +149,13 @@ func (s *Script) Validate() []ValidationError {
 	if s.Truth.KillerRoleID != "" && !roleIDs[s.Truth.KillerRoleID] {
 		add("truth.killerRoleId", "凶手角色不存在：%s", s.Truth.KillerRoleID)
 	}
+	// Multi-case scripts name every guilty role; a typo here would only show up
+	// at the reveal, after the whole table has played.
+	for _, rid := range s.Truth.KillerRoleIDs {
+		if !roleIDs[rid] {
+			add("truth.killerRoleIds", "凶手角色不存在：%s", rid)
+		}
+	}
 
 	// Card-game scripts carry a deck instead of a clue pool. The checks below
 	// are about the deck only: every id unique, every kind known, every skill
@@ -295,6 +302,9 @@ func (s *Script) Validate() []ValidationError {
 				}
 			}
 			switch ph.SearchMode {
+			// An empty mode reads as pick: the importer writes it out for every
+			// script it touches, and the engine must still run an old record that
+			// predates the field. Shipped data states it anyway (scripts/*).
 			case "", SearchPick, SearchRandom:
 			default:
 				add(p+".searchMode", "未知搜证方式：%s（可选 pick / random）", ph.SearchMode)

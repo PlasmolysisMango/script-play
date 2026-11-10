@@ -44,12 +44,13 @@ export function ReplayPage({ code }: { code: string }) {
     }
   }, [data])
 
-  const killer = useMemo(() => {
-    if (!data) return ''
-    // The seat list already carries the role name, so the card never flashes a
-    // "loading" placeholder while the script lookup is in flight.
-    const seat = data.game.seats.find((s) => s.roleId === data.truth.killerRoleId)
-    return roleNames[data.truth.killerRoleId] ?? seat?.roleName ?? ''
+  // 多案剧本会给出多个凶手：先列 killerRoleIds，没写就退回主案那一位。
+  const killers = useMemo(() => {
+    if (!data) return []
+    const ids = data.truth.killerRoleIds.length > 0 ? data.truth.killerRoleIds : [data.truth.killerRoleId]
+    return ids
+      .filter((id) => id)
+      .map((id) => roleNames[id] ?? data.game.seats.find((s) => s.roleId === id)?.roleName ?? id)
   }, [data, roleNames])
 
   // Event logs carry seat ids; the replay should read as names, not ids.
@@ -89,7 +90,9 @@ export function ReplayPage({ code }: { code: string }) {
       <section className="space-y-4">
         <div className="card border-rose-500/40 bg-rose-950/20">
           <SectionTitle aside={<Tag tone="red">含剧透</Tag>}>真相</SectionTitle>
-          <p className="text-lg font-semibold text-rose-100">凶手：{killer || (namesReady ? (data.truth.killerRoleId ? '未标注' : 'NPC（见真相）') : '（读取角色名…）')}</p>
+          <p className="text-lg font-semibold text-rose-100">
+            凶手：{killers.join('、') || (namesReady ? 'NPC（见真相）' : '（读取角色名…）')}
+          </p>
           {data.truth.method ? <p className="mt-2 text-sm text-slate-300">手法：{data.truth.method}</p> : null}
           {data.truth.motive ? <p className="mt-1 text-sm text-slate-300">动机：{data.truth.motive}</p> : null}
           {data.truth.summary ? (

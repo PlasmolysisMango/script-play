@@ -71,6 +71,45 @@ func (h *Hub) Count(gameID string) int {
 	return len(h.games[gameID])
 }
 
+// SeatPresence returns a predicate telling whether one seat currently holds a
+// live socket.
+//
+// While a game has no connections at all every seat answers true: an empty
+// table means "not connected yet" (the server just restarted, or nobody opened
+// the page) rather than "everybody left". A headless test or a driver talking
+// plain HTTP therefore never gets its turns skipped; the manager's abandonment
+// watchdog covers the genuinely empty case.
+func (h *Hub) SeatPresence(gameID string) func(seatID string) bool {
+	return func(seatID string) bool {
+		h.mu.RLock()
+		defer h.mu.RUnlock()
+		set := h.games[gameID]
+		if len(set) == 0 {
+			return true
+		}
+		for c := range set {
+			if c.Seat.ID == seatID {
+				return true
+			}
+		}
+		return false
+	}
+}
+
+// Online reports whether this exact seat holds a socket right now. Unlike
+// SeatPresence it has no "nobody connected means everybody is here" fallback:
+// the room view uses it to show who is really online.
+func (h *Hub) Online(gameID, seatID string) bool {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	for c := range h.games[gameID] {
+		if c.Seat.ID == seatID {
+			return true
+		}
+	}
+	return false
+}
+
 // Publish implements engine.Broadcaster. Events are filtered per client, so a
 // private clue never reaches another socket.
 func (h *Hub) Publish(ev domain.Event) {
