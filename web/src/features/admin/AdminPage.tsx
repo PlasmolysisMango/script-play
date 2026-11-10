@@ -83,13 +83,43 @@ function UsersPanel({ notify }: { notify: (message: string, kind?: 'info' | 'err
     onError: (err) => notify(err instanceof ApiError ? err.message : '重置失败', 'error'),
   })
 
+  const purge = useMutation({
+    mutationFn: () => api.adminPurgeUsers(),
+    onSuccess: (res) => {
+      const handed = res.scriptsReassigned > 0 ? `，${res.scriptsReassigned} 个剧本转归管理员` : ''
+      notify(`已清理 ${res.deleted} 个普通账号${handed}${res.failed > 0 ? `，${res.failed} 个失败` : ''}`)
+      void queryClient.invalidateQueries({ queryKey: ['admin', 'users'] })
+      void queryClient.invalidateQueries({ queryKey: ['admin', 'rooms'] })
+    },
+    onError: (err) => notify(err instanceof ApiError ? err.message : '清理账号失败', 'error'),
+  })
+
   if (users.isLoading) return <Spinner label="正在读取账号…" />
   if (users.error) return <Empty>读取账号失败</Empty>
   const rows = users.data ?? []
+  const nonAdmins = rows.filter((u) => u.role !== 'admin').length
 
   return (
     <div className="sheet">
       <SectionTitle aside={<Tag>{rows.length} 个账号</Tag>}>账号</SectionTitle>
+      <div className="mb-3 flex flex-wrap items-center justify-end gap-2">
+        <button
+          type="button"
+          className="btn-ghost text-[11px] text-rose-300"
+          disabled={purge.isPending || nonAdmins === 0}
+          onClick={() => {
+            if (
+              window.confirm(
+                `删除全部 ${nonAdmins} 个普通账号？这些账号会立即无法登录，名下剧本转归当前管理员，管理员账号不受影响。`,
+              )
+            ) {
+              purge.mutate()
+            }
+          }}
+        >
+          清理所有普通账号
+        </button>
+      </div>
       {issued ? (
         <div className="mb-3 rounded-xl border border-amber-500/40 bg-amber-950/30 p-3 text-xs text-amber-100">
           <p>
@@ -177,13 +207,55 @@ function RoomsPanel({ notify }: { notify: (message: string, kind?: 'info' | 'err
     onError: (err) => notify(err instanceof ApiError ? err.message : '删除失败', 'error'),
   })
 
+  const purge = useMutation({
+    mutationFn: (all: boolean) => api.adminPurgeRooms(all),
+    onSuccess: (res, all) => {
+      const skipped = res.skipped > 0 ? `，跳过 ${res.skipped} 个运行中的房间` : ''
+      const failed = res.failed > 0 ? `，${res.failed} 个失败` : ''
+      notify(`${all ? '已清理全部' : '已清理非运行'}房间：删除 ${res.deleted} 个${skipped}${failed}`)
+      void refresh()
+    },
+    onError: (err) => notify(err instanceof ApiError ? err.message : '清理房间失败', 'error'),
+  })
+
   if (rooms.isLoading) return <Spinner label="正在读取房间…" />
   if (rooms.error) return <Empty>读取房间失败</Empty>
   const rows = rooms.data ?? []
+  const nonRunning = rows.filter((r) => !r.running).length
 
   return (
     <div className="sheet">
       <SectionTitle aside={<Tag>{rows.length} 个房间</Tag>}>房间</SectionTitle>
+      <div className="mb-3 flex flex-wrap items-center justify-end gap-2">
+        <button
+          type="button"
+          className="btn-ghost text-[11px]"
+          disabled={purge.isPending || nonRunning === 0}
+          onClick={() => {
+            if (window.confirm(`删除 ${nonRunning} 个非运行房间？等待开始和已结束的房间记录都会被删除，运行中的对局不受影响。`)) {
+              purge.mutate(false)
+            }
+          }}
+        >
+          清理非运行房间
+        </button>
+        <button
+          type="button"
+          className="btn-ghost text-[11px] text-rose-300"
+          disabled={purge.isPending || rows.length === 0}
+          onClick={() => {
+            if (
+              window.confirm(
+                `删除全部 ${rows.length} 个房间？运行中的对局会立即停止，房间记录与对局日志都会消失，且无法恢复。`,
+              )
+            ) {
+              purge.mutate(true)
+            }
+          }}
+        >
+          清理所有房间
+        </button>
+      </div>
       {rows.length === 0 ? (
         <Empty>还没有任何房间。</Empty>
       ) : (

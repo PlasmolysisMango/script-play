@@ -226,9 +226,23 @@ export const api = {
       body: JSON.stringify(password ? { password } : {}),
     })
   },
+  /** Removes every non-admin account; scripts are handed to the acting admin. */
+  async adminPurgeUsers(): Promise<{ deleted: number; scriptsReassigned: number; failed: number }> {
+    return request<{ deleted: number; scriptsReassigned: number; failed: number }>('/api/admin/users/purge', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    })
+  },
   async adminRooms(): Promise<AdminRoom[]> {
     const res = await request<{ rooms: unknown[] }>('/api/admin/rooms')
     return (res.rooms ?? []).map((r) => adminRoomSchema.parse(r))
+  },
+  /** Deletes idle rooms, or every room when all is true. */
+  async adminPurgeRooms(all: boolean): Promise<{ deleted: number; skipped: number; failed: number }> {
+    return request<{ deleted: number; skipped: number; failed: number }>('/api/admin/rooms/purge', {
+      method: 'POST',
+      body: JSON.stringify({ all }),
+    })
   },
   async adminCloseRoom(code: string): Promise<void> {
     await request<unknown>(`/api/admin/rooms/${code}/close`, { method: 'POST' })

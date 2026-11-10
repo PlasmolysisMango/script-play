@@ -133,6 +133,22 @@ func (s *Store) PutUser(u *domain.User) error {
 	return nil
 }
 
+// DeleteUser removes an account and frees its username for reuse. Scripts the
+// account owned are not cascaded: the caller decides whether to reassign or
+// delete them.
+func (s *Store) DeleteUser(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	u, ok := s.users[id]
+	if !ok {
+		return ErrNotFound
+	}
+	delete(s.users, id)
+	delete(s.usernames, strings.ToLower(u.Username))
+	s.mark(keyUsers)
+	return nil
+}
+
 // ListUsers returns every account, newest first. Hashes are included because
 // the admin console needs to know whether a password was already reset, but
 // they are never reversible.

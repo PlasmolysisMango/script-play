@@ -117,6 +117,97 @@ func TestAdminResetsPasswordAndListsAccounts(t *testing.T) {
 	}
 }
 
+// Bulk cleanup is the console's answer to a test deployment full of throwaway
+// accounts and rooms: ordinary accounts go, admins stay, and the idle sweep
+// must never stop a live game.
+func TestAdminPurgesAccountsAndRooms(t *testing.T) {
+	ts := newE2EServer(t, "mock", time.Second, 5*time.Second)
+	admin := adminClient(t, ts)
+	scriptID := importFlexibleScript(t, admin)
+
+	host := registerUser(t, ts, "purge_host")
+	guest := registerUser(t, ts, "purge_guest")
+	other := registerUser(t, ts, "purge_other")
+
+	lobby := createRoom(t, host, map[string]any{"scriptId": scriptID, "maxSeats": 2}).Room.Code
+	running := createRoom(t, guest, map[string]any{"scriptId": scriptID, "maxSeats": 2}).Room.Code
+	joinRoom(t, other, running)
+	guest.mustJSON(http.MethodPost, "/api/rooms/"+running+"/start", nil, nil, http.StatusOK)
+
+	if code, _ := host.call(http.MethodPost, "/api/admin/rooms/purge", map[string]any{"all": true}); code != http.StatusForbidden {
+		t.Fatalf("purge rooms as user = %d", code)
+	}
+	if code, _ := host.call(http.MethodPost, "/api/admin/users/purge", map[string]any{}); code != http.StatusForbidden {
+		t.Fatalf("purge users as user = %d", code)
+	}
+
+	var idle struct {
+		Deleted int `json:"deleted"`
+		Skipped int `json:"skipped"`
+		Failed  int `json:"failed"`
+	}
+	admin.mustJSON(http.MethodPost, "/api/admin/rooms/purge", map[string]any{"all": false}, &idle, http.StatusOK)
+	if idle.Deleted != 1 || idle.Skipped != 1 || idle.Failed != 0 {
+		t.Fatalf("idle purge = %+v, want one deleted and one running skipped", idle)
+	}
+	listed := func() map[string]bool {
+		var res struct {
+			Rooms []struct {
+				Code string `json:"code"`
+			} `json:"rooms"`
+		}
+		admin.mustJSON(http.MethodGet, "/api/admin/rooms", nil, &res, http.StatusOK)
+		out := map[string]bool{}
+		for _, r := range res.Rooms {
+			out[r.Code] = true
+		}
+		return out
+	}
+	if left := listed(); !left[running] || left[lobby] {
+		t.Fatalf("after idle purge rooms = %+v, want only %s", left, running)
+	}
+
+	var all struct {
+		Deleted int `json:"deleted"`
+		Failed  int `json:"failed"`
+	}
+	admin.mustJSON(http.MethodPost, "/api/admin/rooms/purge", map[string]any{"all": true}, &all, http.StatusOK)
+	if all.Deleted != 1 || all.Failed != 0 {
+		t.Fatalf("full purge = %+v, want the running room removed", all)
+	}
+	if left := listed(); len(left) != 0 {
+		t.Fatalf("rooms left after full purge: %+v", left)
+	}
+
+	var purged struct {
+		Deleted           int `json:"deleted"`
+		ScriptsReassigned int `json:"scriptsReassigned"`
+		Failed            int `json:"failed"`
+	}
+	admin.mustJSON(http.MethodPost, "/api/admin/users/purge", map[string]any{}, &purged, http.StatusOK)
+	if purged.Deleted != 3 || purged.Failed != 0 {
+		t.Fatalf("account purge = %+v, want three users removed", purged)
+	}
+	// The fixture script belongs to the admin; a purge must not "reassign" it
+	// just because ListScripts also returns other people's published scripts.
+	if purged.ScriptsReassigned != 0 {
+		t.Fatalf("account purge reassigned %d scripts that had no owner among the removed users", purged.ScriptsReassigned)
+	}
+	var remaining struct {
+		Users []struct {
+			Role string `json:"role"`
+		} `json:"users"`
+	}
+	admin.mustJSON(http.MethodGet, "/api/admin/users", nil, &remaining, http.StatusOK)
+	if len(remaining.Users) != 1 || remaining.Users[0].Role != "admin" {
+		t.Fatalf("users after purge = %+v, want only the admin", remaining.Users)
+	}
+	if code, _ := host.call(http.MethodPost, "/api/auth/login",
+		map[string]string{"username": "purge_host", "password": "secret123"}); code != http.StatusUnauthorized {
+		t.Fatalf("deleted account still logs in: %d", code)
+	}
+}
+
 // "Close" keeps the transcript for the replay, "delete" removes the room for
 // good. Both are admin actions on someone else's room.
 func TestAdminClosesAndDeletesRooms(t *testing.T) {

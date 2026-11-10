@@ -88,8 +88,10 @@ func (s *Server) routes() {
 	m.HandleFunc("DELETE /api/admin/materials/{id}", s.withAdmin(s.handleDeleteMaterial))
 
 	m.HandleFunc("GET /api/admin/users", s.withAdmin(s.handleAdminUsers))
+	m.HandleFunc("POST /api/admin/users/purge", s.withAdmin(s.handleAdminPurgeUsers))
 	m.HandleFunc("POST /api/admin/users/{id}/password", s.withAdmin(s.handleAdminResetPassword))
 	m.HandleFunc("GET /api/admin/rooms", s.withAdmin(s.handleAdminRooms))
+	m.HandleFunc("POST /api/admin/rooms/purge", s.withAdmin(s.handleAdminPurgeRooms))
 	m.HandleFunc("POST /api/admin/rooms/{code}/close", s.withAdmin(s.handleAdminCloseRoom))
 	m.HandleFunc("DELETE /api/admin/rooms/{code}", s.withAdmin(s.handleAdminDeleteRoom))
 

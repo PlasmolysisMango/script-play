@@ -122,6 +122,43 @@ func (s *Server) handleAdminUsers(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"users": out})
 }
 
+// handleAdminPurgeUsers deletes every non-admin account. Admin accounts are
+// never touched, and a script owned by a removed account is handed to the
+// acting admin instead of disappearing with its author.
+func (s *Server) handleAdminPurgeUsers(w http.ResponseWriter, r *http.Request) {
+	me := currentUser(r)
+	deleted, reassigned, failed := 0, 0, 0
+	var problems []string
+	for _, u := range s.store.ListUsers() {
+		if u.Role == domain.RoleAdmin {
+			continue
+		}
+		for _, rec := range s.store.ListScripts(u.ID) {
+			// ListScripts also returns every published script, including ones
+			// this account does not own; only move what would be orphaned.
+			if rec.OwnerUserID != u.ID {
+				continue
+			}
+			rec.OwnerUserID = me.ID
+			s.store.PutScript(rec)
+			reassigned++
+		}
+		if err := s.store.DeleteUser(u.ID); err != nil {
+			failed++
+			problems = append(problems, u.Username+": "+err.Error())
+			continue
+		}
+		deleted++
+	}
+	slog.Info("admin purged accounts", "deleted", deleted, "scriptsReassigned", reassigned, "by", me.Username)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"deleted":           deleted,
+		"scriptsReassigned": reassigned,
+		"failed":            failed,
+		"errors":            problems,
+	})
+}
+
 // handleAdminResetPassword issues a new password. When the request omits one a
 // temporary password is generated and returned exactly once, so the admin can
 // hand it over without the server ever storing a readable secret.
@@ -224,6 +261,42 @@ func (s *Server) handleAdminRooms(w http.ResponseWriter, r *http.Request) {
 		out = append(out, view)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"rooms": out})
+}
+
+// handleAdminPurgeRooms deletes rooms in bulk. Without {"all":true} only rooms
+// with no live actor are removed, so a lobby cleanup cannot stop a running
+// game; the full sweep closes actors before deleting their records.
+func (s *Server) handleAdminPurgeRooms(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		All bool `json:"all"`
+	}
+	if err := decode(r, &req); err != nil && !errors.Is(err, io.EOF) {
+		fail(w, http.StatusBadRequest, err)
+		return
+	}
+	deleted, skipped, failed := 0, 0, 0
+	var problems []string
+	for _, room := range s.store.ListRooms() {
+		if !req.All {
+			if _, running := s.rooms.Actor(room.ID); running {
+				skipped++
+				continue
+			}
+		}
+		if err := s.rooms.DeleteRoom(room.ID); err != nil {
+			failed++
+			problems = append(problems, room.Code+": "+err.Error())
+			continue
+		}
+		deleted++
+	}
+	slog.Info("admin purged rooms", "deleted", deleted, "skipped", skipped, "all", req.All, "by", currentUser(r).Username)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"deleted": deleted,
+		"skipped": skipped,
+		"failed":  failed,
+		"errors":  problems,
+	})
 }
 
 func (s *Server) handleAdminCloseRoom(w http.ResponseWriter, r *http.Request) {
