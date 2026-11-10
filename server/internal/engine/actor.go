@@ -179,8 +179,8 @@ type Actor struct {
 	// a result that was already printed.
 	voteClosed bool
 	phaseGen   int
-	started   bool
-	finished  bool
+	started    bool
+	finished   bool
 
 	// done is closed once the game ends, so the room manager can free the
 	// concurrency slot instead of keeping a finished actor forever.
@@ -3411,10 +3411,12 @@ func (a *Actor) persistLocked() {
 	if a.sink == nil {
 		return
 	}
-	a.sink.PutGame(a.snapshotLocked())
+	// The store takes its own copy (PutGame clones), so marshalling the whole
+	// game here as well only doubled the serialisation cost of every event.
+	a.sink.PutGame(a.g)
 }
 
-// snapshotLocked deep-copies the game so the store never aliases live state.
+// snapshotLocked deep-copies the game for callers that need a detached value.
 func (a *Actor) snapshotLocked() *domain.Game {
 	b, err := json.Marshal(a.g)
 	if err != nil {

@@ -1,11 +1,15 @@
 // Package store persists users, scripts, rooms, games and import jobs.
 //
-// Implementation note: the plan called for SQLite. This build ships an
-// embedded JSON snapshot store instead (atomic rename + debounced flush)
-// because the sqlite driver is a very heavy pure-Go compile and the target
-// machine only has 2 vCPU / 3.5 GB. The Store type is the whole surface the
-// rest of the server uses, so swapping in a SQLite backend later only touches
-// this package.
+// The data lives in JSON files under <data>/store: whole-table files for the
+// small tables, one file per script and per game, and an append-only JSONL
+// event log per game (see persist.go). The old single state.json snapshot is
+// migrated automatically on first start and kept as state.json.pre-split-<ts>.
+//
+// Implementation note: the plan called for SQLite. This build ships embedded
+// JSON files instead (atomic rename + debounced flush) because the sqlite
+// driver is a very heavy pure-Go compile and the target machine only has
+// 2 vCPU / 3.5 GB. The Store type is the whole surface the rest of the server
+// uses, so swapping in a SQLite backend later only touches this package.
 package store
 
 import (
@@ -14,8 +18,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -30,19 +34,11 @@ var ErrNotFound = errors.New("not found")
 // ErrConflict is returned when a unique constraint is violated.
 var ErrConflict = errors.New("conflict")
 
-type snapshot struct {
-	Users     []*domain.User         `json:"users"`
-	Scripts   []*domain.ScriptRecord `json:"scripts"`
-	Rooms     []*domain.Room         `json:"rooms"`
-	Games     []*domain.Game         `json:"games"`
-	Materials []*domain.RawMaterial  `json:"materials"`
-}
-
 // Store is a process-wide, mutex-guarded document store.
 type Store struct {
 	mu        sync.RWMutex
 	dir       string
-	file      string
+	base      string
 	users     map[string]*domain.User
 	usernames map[string]string
 	scripts   map[string]*domain.ScriptRecord
@@ -50,149 +46,16 @@ type Store struct {
 	games     map[string]*domain.Game
 	materials map[string]*domain.RawMaterial
 
-	dirty   bool
+	// dirty holds, per entity key, the version waiting to be written; vers holds
+	// the version currently in memory. A flush clears an entry only when the two
+	// still match, so a write that races with a Put is retried instead of lost.
+	dirty     map[string]uint64
+	vers      map[string]uint64
+	eventRows map[string]int
+
 	stop    chan struct{}
 	done    chan struct{}
 	flushed time.Time
-}
-
-// Open loads (or creates) the store under dir.
-func Open(dir string) (*Store, error) {
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return nil, fmt.Errorf("mkdir data dir: %w", err)
-	}
-	s := &Store{
-		dir:       dir,
-		file:      filepath.Join(dir, "state.json"),
-		users:     map[string]*domain.User{},
-		usernames: map[string]string{},
-		scripts:   map[string]*domain.ScriptRecord{},
-		rooms:     map[string]*domain.Room{},
-		games:     map[string]*domain.Game{},
-		materials: map[string]*domain.RawMaterial{},
-		stop:      make(chan struct{}),
-		done:      make(chan struct{}),
-	}
-	if err := s.load(); err != nil {
-		return nil, err
-	}
-	go s.loop()
-	return s, nil
-}
-
-func (s *Store) load() error {
-	b, err := os.ReadFile(s.file)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("read state: %w", err)
-	}
-	var snap snapshot
-	if err := json.Unmarshal(b, &snap); err != nil {
-		return fmt.Errorf("decode state: %w", err)
-	}
-	for _, u := range snap.Users {
-		s.users[u.ID] = u
-		s.usernames[strings.ToLower(u.Username)] = u.ID
-	}
-	for _, sc := range snap.Scripts {
-		s.scripts[sc.ID] = sc
-	}
-	for _, r := range snap.Rooms {
-		s.rooms[r.ID] = r
-	}
-	for _, g := range snap.Games {
-		s.games[g.ID] = g
-	}
-	for _, j := range snap.Materials {
-		s.materials[j.ID] = j
-	}
-	return nil
-}
-
-func (s *Store) loop() {
-	defer close(s.done)
-	t := time.NewTicker(700 * time.Millisecond)
-	defer t.Stop()
-	for {
-		select {
-		case <-s.stop:
-			_ = s.Flush()
-			return
-		case <-t.C:
-			_ = s.Flush()
-		}
-	}
-}
-
-// Close stops the flusher and writes the last snapshot.
-func (s *Store) Close() error {
-	close(s.stop)
-	<-s.done
-	return s.Flush()
-}
-
-// Flush writes the snapshot to disk when dirty.
-func (s *Store) Flush() error {
-	s.mu.Lock()
-	if !s.dirty {
-		s.mu.Unlock()
-		return nil
-	}
-	snap := snapshot{
-		Users:     make([]*domain.User, 0, len(s.users)),
-		Scripts:   make([]*domain.ScriptRecord, 0, len(s.scripts)),
-		Rooms:     make([]*domain.Room, 0, len(s.rooms)),
-		Games:     make([]*domain.Game, 0, len(s.games)),
-		Materials: make([]*domain.RawMaterial, 0, len(s.materials)),
-	}
-	for _, v := range s.users {
-		snap.Users = append(snap.Users, v)
-	}
-	for _, v := range s.scripts {
-		snap.Scripts = append(snap.Scripts, v)
-	}
-	for _, v := range s.rooms {
-		snap.Rooms = append(snap.Rooms, v)
-	}
-	for _, v := range s.games {
-		snap.Games = append(snap.Games, v)
-	}
-	for _, v := range s.materials {
-		snap.Materials = append(snap.Materials, v)
-	}
-	s.dirty = false
-	s.flushed = time.Now()
-	s.mu.Unlock()
-
-	sort.Slice(snap.Users, func(i, j int) bool { return snap.Users[i].CreatedAt.Before(snap.Users[j].CreatedAt) })
-	b, err := json.MarshalIndent(snap, "", " ")
-	if err != nil {
-		return err
-	}
-	tmp := s.file + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o644); err != nil {
-		return err
-	}
-	return os.Rename(tmp, s.file)
-}
-
-func (s *Store) touch() { s.dirty = true }
-
-// clonePtr deep copies a stored value. The store and its callers must never
-// share a pointer: the flusher marshals stored values while actors and handlers
-// keep mutating their own copies.
-func clonePtr[T any](v *T) *T {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return v
-	}
-	var out T
-	if err := json.Unmarshal(b, &out); err != nil {
-		return v
-	}
-	return &out
 }
 
 // NewID returns a random hex identifier with a human readable prefix.
@@ -229,7 +92,7 @@ func (s *Store) CreateUser(u *domain.User) error {
 	}
 	s.users[u.ID] = u
 	s.usernames[key] = u.ID
-	s.touch()
+	s.mark(keyUsers)
 	return nil
 }
 
@@ -266,7 +129,7 @@ func (s *Store) PutUser(u *domain.User) error {
 	cp := *u
 	s.users[u.ID] = &cp
 	s.usernames[strings.ToLower(cp.Username)] = cp.ID
-	s.touch()
+	s.mark(keyUsers)
 	return nil
 }
 
@@ -306,7 +169,7 @@ func (s *Store) PutScript(rec *domain.ScriptRecord) {
 	defer s.mu.Unlock()
 	rec.UpdatedAt = time.Now().UTC()
 	s.scripts[rec.ID] = clonePtr(rec)
-	s.touch()
+	s.mark(scriptKey(rec.ID))
 }
 
 // GetScript returns a copy of the record. The store owns the canonical value:
@@ -348,15 +211,19 @@ func (s *Store) AllScripts() []*domain.ScriptRecord {
 	return out
 }
 
-// DeleteScript removes a script record.
+// DeleteScript removes a script record and its file.
 func (s *Store) DeleteScript(id string) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if _, ok := s.scripts[id]; !ok {
+		s.mu.Unlock()
 		return ErrNotFound
 	}
 	delete(s.scripts, id)
-	s.touch()
+	delete(s.dirty, scriptKey(id))
+	s.mu.Unlock()
+	if err := os.Remove(s.scriptPath(id)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
 	return nil
 }
 
@@ -368,7 +235,7 @@ func (s *Store) PutRoom(r *domain.Room) {
 	defer s.mu.Unlock()
 	r.UpdatedAt = time.Now().UTC()
 	s.rooms[r.ID] = clonePtr(r)
-	s.touch()
+	s.mark(keyRooms)
 }
 
 // GetRoom returns a room by id (a copy owned by the caller).
@@ -406,7 +273,8 @@ func (s *Store) ListRooms() []*domain.Room {
 	return out
 }
 
-// DeleteRoom removes a room record (admin delete).
+// DeleteRoom removes a room record (admin delete). Rooms live in one table
+// file, so the whole table is rewritten on the next flush.
 func (s *Store) DeleteRoom(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -414,7 +282,7 @@ func (s *Store) DeleteRoom(id string) error {
 		return ErrNotFound
 	}
 	delete(s.rooms, id)
-	s.touch()
+	s.mark(keyRooms)
 	return nil
 }
 
@@ -426,7 +294,7 @@ func (s *Store) PutGame(g *domain.Game) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.games[g.ID] = clonePtr(g)
-	s.touch()
+	s.mark(gameKey(g.ID))
 }
 
 // GetGame returns a game by id (a copy owned by the caller).
@@ -440,17 +308,28 @@ func (s *Store) GetGame(id string) (*domain.Game, error) {
 	return clonePtr(g), nil
 }
 
-// DeleteGame removes a game record. A missing game is not an error: deleting a
-// lobby room that never started should still succeed.
+// DeleteGame removes a game record and its event log. A missing game is not an
+// error: deleting a lobby room that never started should still succeed.
 func (s *Store) DeleteGame(id string) {
 	if id == "" {
 		return
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	if _, ok := s.games[id]; ok {
+	_, ok := s.games[id]
+	if ok {
 		delete(s.games, id)
-		s.touch()
+		delete(s.dirty, gameKey(id))
+		delete(s.eventRows, id)
+	}
+	s.mu.Unlock()
+	if !ok {
+		return
+	}
+	if err := os.Remove(s.gamePath(id)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		slog.Warn("remove game file failed", "game", id, "err", err)
+	}
+	if err := os.Remove(s.eventsPath(id)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		slog.Warn("remove game event log failed", "game", id, "err", err)
 	}
 }
 
@@ -461,7 +340,7 @@ func (s *Store) PutMaterial(m *domain.RawMaterial) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.materials[m.ID] = clonePtr(m)
-	s.touch()
+	s.mark(keyMaterials)
 }
 
 // GetMaterial returns one uploaded original by id.
@@ -495,9 +374,24 @@ func (s *Store) DeleteMaterial(id string) error {
 		return ErrNotFound
 	}
 	delete(s.materials, id)
-	s.touch()
+	s.mark(keyMaterials)
 	return nil
 }
 
 // Dir returns the data directory (used for uploads).
 func (s *Store) Dir() string { return s.dir }
+
+// clonePtr deep copies a stored value. The store and its callers must never
+// share a pointer: the flusher marshals stored values while actors and handlers
+// keep mutating their own copies.
+func clonePtr[T any](v *T) *T {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return v
+	}
+	var out T
+	if err := json.Unmarshal(b, &out); err != nil {
+		return v
+	}
+	return &out
+}

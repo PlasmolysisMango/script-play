@@ -81,7 +81,7 @@ SP_ADMIN_USERNAME=admin SP_ADMIN_PASSWORD=change-me   # 启动时创建或提权
 服务端**不解析**任何原始剧本。它只做三件事：归档原件、存草稿、校验发布。
 
 1. **归档原件**：管理员把压缩包、docx、pdf、照片上传到 `POST /api/admin/materials`，
-   文件原样存进服务端 `data/inbox/<时间戳>-raw_<随机>.<ext>`，`state.json` 只多一条
+   文件原样存进服务端 `data/inbox/<时间戳>-raw_<随机>.<ext>`，`data/store/materials.json` 只多一条
    `RawMaterial`。服务端不解压、不 OCR、不摘要 —— 这一步没有 LLM 参与。
 2. **转成标准 JSON**：开发者把原件转成 `docs/script.schema.json` 描述的结构，然后三选一：
    工作台「新建空白草稿」拿骨架后在可视化模式逐字段填、粘贴完整 JSON，或直接调接口：

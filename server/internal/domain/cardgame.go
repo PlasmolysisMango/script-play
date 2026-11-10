@@ -83,20 +83,20 @@ type CardWord struct {
 // CardState is the live table: hands, pile, turn pointer and score sheets.
 type CardState struct {
 	// Order is the clockwise seat order fixed when the cards were dealt.
-	Order     []string            `json:"order"`
-	Hands     map[string][]string `json:"hands"`
-	Discard   []string            `json:"discard"`
-	Finished  []string            `json:"finished"`
-	Turn      int                 `json:"turn"`
+	Order    []string            `json:"order"`
+	Hands    map[string][]string `json:"hands"`
+	Discard  []string            `json:"discard"`
+	Finished []string            `json:"finished"`
+	Turn     int                 `json:"turn"`
 	// Last is the seat that put a card on the pile most recently: the printed
 	// rule hands the turn back to that player when the whole table passes.
-	Last        string            `json:"last,omitempty"`
-	ForcedColor string            `json:"forcedColor,omitempty"`
-	RandomNext  bool              `json:"randomNext,omitempty"`
-	Passes      int               `json:"passes,omitempty"`
+	Last        string `json:"last,omitempty"`
+	ForcedColor string `json:"forcedColor,omitempty"`
+	RandomNext  bool   `json:"randomNext,omitempty"`
+	Passes      int    `json:"passes,omitempty"`
 	// Pending is a two-step skill waiting for its second half (挑两张弃牌 /
 	// 回赠一张手牌).
-	Pending *CardPending `json:"pending,omitempty"`
+	Pending *CardPending          `json:"pending,omitempty"`
 	Answers map[string]CardAnswer `json:"answers,omitempty"`
 	Result  []CardScore           `json:"result,omitempty"`
 }

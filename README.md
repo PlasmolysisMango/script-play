@@ -348,7 +348,7 @@ prompt 走 stdin。`--tools=` 必须显式关闭，否则子进程会在工作�
 | 变量 | 默认 | 说明 |
 |---|---|---|
 | `SP_ADDR` | `:8080` | 监听地址 |
-| `SP_DATA_DIR` | `./data` | 数据目录（JSON 快照 + `inbox/` 原件 + JWT secret） |
+| `SP_DATA_DIR` | `./data` | 数据目录（`store/` 分域 JSON + `inbox/` 原件 + `media/` 上传图 + JWT secret） |
 | `SP_WEB_DIR` | 空 | 设置后由 Go 自己托管前端静态文件（仅本地开发；生产由 nginx 发） |
 | `SP_SCRIPTS_DIR` | `../scripts` | 随仓库固化的剧本目录；`GET /script-assets/…` 从这个根读图，相对工作目录 |
 | `SP_JWT_SECRET` | 自动生成 | 不设则落盘 `data/secret.key` |
@@ -364,6 +364,27 @@ prompt 走 stdin。`--tools=` 必须显式关闭，否则子进程会在工作�
 | `SP_AGENT_TIMEOUT_SEC` | `90` | 单次 Agent 生成上限 |
 | `SP_MAX_ROOMS` | `2` | 同时进行的对局数 |
 | `SP_MAX_UPLOAD_MB` | `256` | 单个原件上传上限（MB）；一次请求最多 2 倍，`client_max_body_size` 需同步放大 |
+
+## 数据目录布局
+
+存储是分域的 JSON 文件，不再是单个 `state.json` 快照：
+
+```
+data/store/
+  users.json                 账号全表（几十 KB，登录时也只重写这一份）
+  rooms.json                 房间全表
+  materials.json             原件记录全表
+  scripts/<scriptID>.json    一本剧本一个文件
+  games/<gameID>.json        对局主体，events 字段已被抽走
+  games/<gameID>.events.jsonl  对局事件日志，一行一个 Event，只追加
+```
+
+写入由 dirty 集合驱动：一局打出一条事件只追加一行 JSONL、重写该局十几 KB 的主体，
+其它剧本和别的对局都不动。事件与主体的落盘顺序是「先追加日志、后写主体」，主体里的
+`eventsInLog` 记录有效行数；进程在两者之间崩掉时，多出的行在加载时被忽略并压缩掉。
+
+旧版本的 `data/state.json` 会在启动时自动迁移：拆成上述文件后，原文件改名为
+`data/state.json.pre-split-<时间戳>` 保留，确认无误即可删除。备份只需 `cp -a data/store`。
 
 ## 信息隔离怎么保证
 

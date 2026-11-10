@@ -578,7 +578,8 @@ func TestEachVoteRoundStartsWithACleanBallot(t *testing.T) {
 	}
 }
 
-func TestVotePenaltyAndRewardMovePoints(t *testing.T) {	sc, g := favorScript()
+func TestVotePenaltyAndRewardMovePoints(t *testing.T) {
+	sc, g := favorScript()
 	a := NewActor(g, sc, nil, nil, nil, ActorConfig{})
 	a.mu.Lock()
 	g.Points = map[string]int{}
