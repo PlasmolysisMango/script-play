@@ -3,6 +3,8 @@ SHELL := /bin/bash
 
 SERVER_DIR := server
 WEB_DIR := web
+SERVICE := script-play
+BIN := $(SERVER_DIR)/bin/script-play
 
 ## help: 列出所有目标
 help:
@@ -57,6 +59,26 @@ web-publish: web-build
 	mv /usr/share/nginx/script-play.new /usr/share/nginx/script-play
 	rm -rf /usr/share/nginx/script-play.old
 
+## deploy-backend: 改后端后的一步部署（编译 → systemctl restart → 打印取证）
+deploy-backend: server
+	systemctl restart $(SERVICE)
+	@pid=$$(systemctl show -p MainPID --value $(SERVICE)); \
+	echo "state : $$(systemctl is-active $(SERVICE))"; \
+	echo "exe   : $$(readlink -f /proc/$$pid/exe)"; \
+	echo "build : $$(date -r $(BIN) '+%F %T')"; \
+	echo "start : $$(ps -o lstart= -p $$pid)"; \
+	echo "cgroup: $$(cat /proc/$$pid/cgroup)"; \
+	echo "$$(cat /proc/$$pid/cgroup)" | grep -q '$(SERVICE).service' \
+		|| { echo "!! 进程不在 /system.slice/$(SERVICE).service，检查是否有手工 nohup 实例"; exit 1; }
+
+## deploy-web: 改前端后的一步部署（构建 → 原子发布到 nginx 站点根）
+deploy-web: web-publish
+	@echo "published -> /usr/share/nginx/script-play"; \
+	curl -s -o /dev/null -w 'nginx 9091 -> %{http_code}\n' http://127.0.0.1:9091/;
+
+## deploy: 前后端全量重新部署（顺序：后端重启 → 前端发布）
+deploy: deploy-backend deploy-web
+
 ## voices: 浏览器语音能力自检（Web Speech API，无需下载模型）
 voices:
 	@echo "ASR  : Chrome/Edge 的 webkitSpeechRecognition；其它浏览器自动回退为文本输入"
@@ -67,4 +89,4 @@ voices:
 fmt:
 	cd $(SERVER_DIR) && gofmt -w ./cmd ./internal
 
-.PHONY: help server test check-scripts check-assets run dev-server web-install web-dev web-check web-build web-publish voices fmt
+.PHONY: help server test check-scripts check-assets run dev-server web-install web-dev web-check web-build web-publish deploy-backend deploy-web deploy voices fmt

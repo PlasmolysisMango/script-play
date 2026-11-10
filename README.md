@@ -304,7 +304,17 @@ make server && systemctl daemon-reload && systemctl enable --now script-play
 nginx -t && systemctl reload nginx
 ```
 
-日常发版：`make server && systemctl restart script-play`；只改了前端就 `make web-publish`。
+日常发版按改动范围选一条：
+
+```bash
+make deploy-backend   # 改了后端：go build → systemctl restart → 打印 exe/构建时间/启动时间/cgroup 取证
+make deploy-web       # 改了前端：npm build → 原子发布到 /usr/share/nginx/script-play
+make deploy           # 前后端都改：先后端再前端
+```
+
+`deploy-backend` 会校验新进程落在 `/system.slice/script-play.service`，不在就报错——那是手工 `nohup`
+实例抢了端口、systemd 单元在空转重启的信号。只 `systemctl restart` 不重新 `go build` 等于没部署，
+这一步已由 `make deploy-backend` 内置。
 
 几条不能改错的：
 
