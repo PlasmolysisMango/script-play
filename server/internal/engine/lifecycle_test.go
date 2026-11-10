@@ -71,10 +71,12 @@ func TestHostEndFinishesTheTable(t *testing.T) {
 }
 
 // A reading scene has a floor: clicking "next" twice must not skip the act
-// before anybody could read the role book.
+// before anybody could read the role book. A script's timeoutSec is a
+// suggestion, not a lock — a printed 900-second scene used to ignore the host
+// for fifteen minutes.
 func TestReadingPhaseHoldsAnEarlySkip(t *testing.T) {
 	sc := fixtureScript()
-	sc.Phases = []domain.Phase{{ID: "p1", Type: domain.PhaseReading, Name: "阅读剧本"}}
+	sc.Phases = []domain.Phase{{ID: "p1", Type: domain.PhaseReading, Name: "阅读剧本", TimeoutSec: 900}}
 	a := humanTable(t, sc, ActorConfig{
 		FloorTimeout: 10 * time.Second,
 		AgentTimeout: 2 * time.Second,

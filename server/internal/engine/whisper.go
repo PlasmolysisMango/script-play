@@ -110,7 +110,7 @@ func (a *Actor) replyWhisper(gen int, from, to domain.Seat, text string) {
 	}
 
 	a.thinking(to, "start")
-	raw, _, err := a.generate(ctx, gen, to, req)
+	raw, _, err := a.generate(ctx, gen, to, req, visibleCorpus(v)...)
 	a.thinking(to, "stop")
 	if err != nil {
 		// A provider failure must not leave the sender staring at a message that

@@ -244,6 +244,30 @@ func TestScriptedTurnAcceptsPass(t *testing.T) {
 	})
 }
 
+// Every scripted turn names the pass move: the acceptance run found 746
+// "轮到你发言" prompts and only five said how to hand the turn on.
+func TestScriptedTurnPromptNamesThePassMove(t *testing.T) {
+	sc := fixtureScript()
+	sc.Phases = []domain.Phase{{
+		ID: "p1", Type: domain.PhaseDiscussion, Name: "公聊",
+		SpeechPerPlayer: 1, Order: domain.OrderRoundRobin,
+	}}
+	a := humanTable(t, sc, ActorConfig{FloorTimeout: 10 * time.Second, AgentTimeout: 2 * time.Second})
+
+	waitFor(t, 5*time.Second, func() bool {
+		return hasSystemEvent(a.Snapshot(), "seat1", "轮到你发言")
+	})
+	for _, ev := range a.Snapshot().Events {
+		if strings.Contains(ev.Text, "轮到你发言") {
+			if !strings.Contains(ev.Text, "不发言") {
+				t.Fatalf("prompt does not name the pass move: %q", ev.Text)
+			}
+			return
+		}
+	}
+	t.Fatal("no scripted turn prompt")
+}
+
 // Two seats may ask at the same time; only the head speaks, and the second one
 // keeps its words until it reaches the head.
 func TestQueueKeepsOneSpeakerAtATime(t *testing.T) {

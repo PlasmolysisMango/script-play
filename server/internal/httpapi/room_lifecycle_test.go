@@ -270,6 +270,38 @@ func TestReadyGateAndCloseRunningGame(t *testing.T) {
 	})
 }
 
+// Two seats may not claim the same role. The acceptance run saw a lobby where
+// every role read "taken" while the seat list read unassigned; part of that was
+// a stale read, but a concurrent double-claim was a real way to get there.
+func TestRoleAssignmentRejectsADoubleClaim(t *testing.T) {
+	ts := newE2EServer(t, "mock", time.Second, 5*time.Second)
+	admin := adminClient(t, ts)
+	var seeded struct {
+		Script struct {
+			ID string `json:"id"`
+		} `json:"script"`
+	}
+	admin.mustJSON(http.MethodPost, "/api/scripts/sample", nil, &seeded, http.StatusCreated)
+
+	host := registerUser(t, ts, "roleclaim_host")
+	guest := registerUser(t, ts, "roleclaim_guest")
+	created := createRoom(t, host, map[string]any{"scriptId": seeded.Script.ID, "maxSeats": 4})
+	guestSeat := joinRoom(t, guest, created.Room.Code).Room.MySeatID
+
+	host.mustJSON(http.MethodPatch, "/api/rooms/"+created.Room.Code+"/seats/"+guestSeat,
+		map[string]any{"roleId": "r1"}, nil, http.StatusOK)
+	if code, _ := host.call(http.MethodPatch, "/api/rooms/"+created.Room.Code+"/seats/"+created.Room.MySeatID,
+		map[string]any{"roleId": "r1"}); code != http.StatusBadRequest {
+		t.Fatalf("second claim of r1 = %d, want 400", code)
+	}
+	got := mustRoom(t, host, created.Room.Code)
+	for _, s := range got.Seats {
+		if s.ID == guestSeat && s.RoleID != "r1" {
+			t.Fatalf("the first claim was lost: %+v", s)
+		}
+	}
+}
+
 // A refused start must say how many games hold the slots, and closing an old
 // game must let the next one in — the acceptance run was blocked by 409s that
 // named no cause.

@@ -147,6 +147,13 @@ func (m *Manager) AddSeat(gameID string, seat domain.Seat) (domain.Seat, error) 
 	if seat.Kind == "" {
 		seat.Kind = domain.SeatHuman
 	}
+	if seat.RoleID != "" {
+		for _, other := range g.Seats {
+			if other.RoleID == seat.RoleID {
+				return domain.Seat{}, errors.New("该角色已被其他座位占用")
+			}
+		}
+	}
 	if actor := m.byGame[gameID]; actor != nil {
 		return actor.AddSeat(seat)
 	}
@@ -173,6 +180,15 @@ func (m *Manager) UpdateSeat(gameID, seatID string, fn func(*domain.Seat) error)
 	}
 	if err := fn(s); err != nil {
 		return *s, err
+	}
+	// Check the game this lock owns, not a handler's earlier snapshot: two
+	// concurrent PATCHes could each see a free role and claim it.
+	if s.RoleID != "" {
+		for i := range g.Seats {
+			if g.Seats[i].ID != s.ID && g.Seats[i].RoleID == s.RoleID {
+				return *s, errors.New("该角色已被其他座位占用")
+			}
+		}
 	}
 	m.store.PutGame(g)
 	return *s, nil

@@ -151,6 +151,16 @@ const (
 	EvSeat         = "seat.updated"
 )
 
+// VoteRound is one sealed ballot. PhaseID ties it to the printed question, so
+// a multi-case script keeps its per-round result instead of only the last one.
+type VoteRound struct {
+	PhaseID string            `json:"phaseId"`
+	Round   int               `json:"round,omitempty"`
+	Votes   map[string]string `json:"votes"` // seatID -> roleID ("" = abstain)
+	Counts  map[string]int    `json:"counts"`
+	At      time.Time         `json:"at"`
+}
+
 // Game holds the authoritative state of one match. Truth lives in Script, not
 // here, so nothing in the game log can leak the solution accidentally.
 type Game struct {
@@ -163,7 +173,11 @@ type Game struct {
 	Seats      []Seat               `json:"seats"`
 	ClueState  map[string]ClueState `json:"clueState"`
 	Votes      map[string]string    `json:"votes"` // seatID -> roleID
-	NextSeq    int                  `json:"nextSeq"`
+	// VoteRounds keeps every ballot, in order. Votes alone is the live round:
+	// resetting it per phase is what made a seven-round script look like only
+	// its last five players had voted.
+	VoteRounds []VoteRound `json:"voteRounds,omitempty"`
+	NextSeq    int         `json:"nextSeq"`
 	Events     []Event              `json:"events"`
 	// Items is the per-seat inventory: seatID -> item names. Items only gate
 	// which clue a seat may search; they never travel into a prompt as prose.

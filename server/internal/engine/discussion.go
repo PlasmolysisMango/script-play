@@ -493,7 +493,7 @@ func (a *Actor) agentTurns(ctx context.Context, gen int, seat domain.Seat, ph *d
 			Tools:       a.speechToolsLocked(seat, own, targets),
 			Fresh:       fresh,
 		})
-		text, _, err := a.generate(ctx, gen, seat, req)
+		text, _, err := a.generate(ctx, gen, seat, req, visibleCorpus(v)...)
 		a.thinking(seat, "stop")
 
 		a.mu.Lock()

@@ -1,8 +1,10 @@
 package engine
 
 import (
+	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"script-play/internal/domain"
 )
@@ -78,6 +80,44 @@ func mustPlay(t *testing.T, a *Actor, seatID, cardID string, extra ClientMessage
 		t.Fatalf("play %s: %v", cardID, err)
 	}
 	return ended
+}
+
+// A malformed card.play must not buy a fresh timeout. The acceptance run saw
+// one agent repeat the same target-less skill 388 times while each refusal
+// reset the ninety-second clock; three refusals now hand the turn to auto-play.
+func TestInvalidCardCommandsDoNotStallTheTurn(t *testing.T) {
+	a, _, g := cardActor(t, []string{"stall", "red2"}, []string{"blue1", "red1"})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	t.Cleanup(cancel)
+
+	go a.awaitPlay(ctx, 0, *g.SeatByID("seat1"))
+	waitFor(t, 2*time.Second, func() bool {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		return a.waiters["seat1"] != nil
+	})
+
+	for i := 0; i < playInvalidLimit; i++ {
+		if err := a.Handle(ctx, "seat1", ClientMessage{Type: "card.play", CardID: "stall"}); err != nil {
+			t.Fatalf("invalid command %d: %v", i+1, err)
+		}
+	}
+	waitFor(t, 3*time.Second, func() bool {
+		for _, id := range g.Cards.Hands["seat1"] {
+			if id == "stall" {
+				return false
+			}
+		}
+		return true
+	})
+	waitFor(t, 2*time.Second, func() bool {
+		for _, ev := range a.Snapshot().Events {
+			if strings.Contains(ev.Text, "连续无效出牌") {
+				return true
+			}
+		}
+		return false
+	})
 }
 
 // A card is legal when it matches the pile's colour or number; black skill

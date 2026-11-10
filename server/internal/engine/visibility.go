@@ -85,7 +85,10 @@ type PublicSeat struct {
 // points for naming everybody else's, so the public seat list may only carry a
 // display name from the deal until the reveal phase opens the box.
 func HiddenIdentities(g *domain.Game, sc *domain.Script) bool {
-	if sc.Mode != domain.ModeCardGame || g.Status == domain.RoomFinished {
+	// Only a running table hides the deal: in the lobby the host is still
+	// casting the roles, and blanking every other seat made the assignment look
+	// lost even though it had been saved.
+	if sc.Mode != domain.ModeCardGame || g.Status != domain.RoomRunning {
 		return false
 	}
 	if g.PhaseIndex >= 0 && g.PhaseIndex < len(sc.Phases) {

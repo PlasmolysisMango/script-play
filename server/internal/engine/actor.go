@@ -920,15 +920,12 @@ func (a *Actor) advance(ctx context.Context, gen int) {
 func (a *Actor) requestAdvance(ctx context.Context) error {
 	a.mu.Lock()
 	gen := a.phaseGen
-	// Reading and opening are the only scenes with a floor: the role book has to
-	// stay on screen long enough to be read, so a host clicking "next" twice in
-	// a row cannot skip the whole act.
+	// Reading and opening keep a short floor so a host cannot skip the role
+	// book before anybody reads it. The script's timeoutSec is a suggested
+	// reading time, not a lock: honouring it here made a 900-second scene
+	// ignore the host's "next" for fifteen minutes.
 	if ph := a.m.Current(a.g); ph != nil && (ph.Type == domain.PhaseReading || ph.Type == domain.PhaseOpening) {
-		min := a.cfg.ReadingMin
-		if ph.TimeoutSec > 0 {
-			min = time.Duration(ph.TimeoutSec) * time.Second
-		}
-		if min > 0 {
+		if min := a.cfg.ReadingMin; min > 0 {
 			if left := min - time.Since(a.phaseAt); left > 0 {
 				a.mu.Unlock()
 				return ErrNotAllowed{Reason: fmt.Sprintf("阅读阶段还剩 %d 秒，稍后再进入下一阶段", int(left.Seconds())+1)}
@@ -2865,7 +2862,10 @@ func (a *Actor) awaitSpeech(ctx context.Context, gen int, seat domain.Seat, ph *
 		SeatID:     seat.ID,
 		Visibility: SeatVisibility(seat.ID),
 		PhaseID:    ph.ID,
-		Text:       fmt.Sprintf("轮到你发言（%s）", limit),
+		// Every scripted turn names the pass move, not only the free-talk
+		// prompts: players kept waiting out the clock because nothing said the
+		// turn could be handed on.
+		Text: fmt.Sprintf("轮到你发言（%s）；不想说可以点「不发言」把机会让给别人", limit),
 	})
 	a.persistLocked()
 	a.mu.Unlock()
@@ -2985,11 +2985,11 @@ func (a *Actor) pressureLocked(seat domain.Seat, ph *domain.Phase) persona.Revea
 }
 
 // generate runs one LLM turn with a leak guard and one repair attempt.
-func (a *Actor) generate(ctx context.Context, gen int, seat domain.Seat, req llm.Request) (string, string, error) {
+func (a *Actor) generate(ctx context.Context, gen int, seat domain.Seat, req llm.Request, visible ...string) (string, string, error) {
 	cctx, cancel := context.WithTimeout(ctx, a.cfg.agent())
 	defer cancel()
 
-	guard := NewLeakGuard(a.sc, &seat)
+	guard := NewLeakGuard(a.sc, &seat, visible...)
 	// JSON turns (votes, structured answers) are machine-readable: streaming
 	// them would dump raw JSON into the transcript.
 	var sink func(string) error
@@ -3271,7 +3271,7 @@ func (a *Actor) agentVote(ctx context.Context, gen int, seat domain.Seat) {
 
 	instruction := question + "。请只输出一个 JSON 对象：{\"vote\":\"<角色名>\",\"reason\":\"<一句话理由>\"}。vote 必须是本题指向的角色名，不能是自己。"
 	req := a.pb.BuildVote(PromptInput{Visible: v, Persona: p, Instruction: instruction})
-	text, _, err := a.generate(ctx, gen, seat, req)
+	text, _, err := a.generate(ctx, gen, seat, req, visibleCorpus(v)...)
 	if err != nil {
 		a.recordVote(seat, "")
 		return
@@ -3385,13 +3385,19 @@ func (a *Actor) recordVoteLocked(seat domain.Seat, roleID string) {
 	} else {
 		text = fmt.Sprintf("%s 弃权", a.speakerLocked(seat))
 	}
-	a.appendLocked(domain.Event{Type: domain.EvVote, SeatID: seat.ID, RoleID: roleID, Text: text})
+	phaseID := ""
+	if ph := a.m.Current(a.g); ph != nil {
+		phaseID = ph.ID
+	}
+	a.appendLocked(domain.Event{Type: domain.EvVote, PhaseID: phaseID, SeatID: seat.ID, RoleID: roleID, Text: text})
 	a.persistLocked()
 }
 
 func (a *Actor) tallyVotes() {
 	a.mu.Lock()
 	counts := tally(a.g.Votes)
+	abstain := counts[""]
+	delete(counts, "")
 	type kv struct {
 		role string
 		n    int
@@ -3410,17 +3416,53 @@ func (a *Actor) tallyVotes() {
 	idx := a.sc.Tokenize()
 	for _, it := range list {
 		name := it.role
-		if it.role == "" {
-			name = "弃权"
-		} else if r := idx.RoleByID(it.role); r != nil {
+		if r := idx.RoleByID(it.role); r != nil {
 			name = r.Name
 		}
 		parts = append(parts, fmt.Sprintf("%s %d 票", name, it.n))
 	}
-	if len(parts) == 0 {
-		parts = append(parts, "无人投票")
+	text := ""
+	switch {
+	case len(parts) == 0 && abstain > 0:
+		text = fmt.Sprintf("投票结束：全部弃权（%d 票）", abstain)
+	case len(parts) == 0:
+		text = "投票结束：无人投票"
+	default:
+		text = "投票结束：" + strings.Join(parts, "，")
+		if abstain > 0 {
+			// Abstention is not a candidate: mixing it into the ranked names
+			// made the tally read as if somebody called 弃权 had been voted for.
+			text += fmt.Sprintf("；弃权 %d 票", abstain)
+		}
 	}
-	a.appendLocked(domain.Event{Type: domain.EvVoteResult, Text: "投票结束：" + strings.Join(parts, "，")})
+	phaseID, round := "", 0
+	if ph := a.m.Current(a.g); ph != nil {
+		phaseID, round = ph.ID, ph.Round
+	}
+	votes := make(map[string]string, len(a.g.Votes))
+	for seatID, roleID := range a.g.Votes {
+		votes[seatID] = roleID
+	}
+	roundCounts := make(map[string]int, len(counts)+1)
+	for role, n := range counts {
+		roundCounts[role] = n
+	}
+	if abstain > 0 {
+		roundCounts[""] = abstain
+	}
+	roundRecord := domain.VoteRound{
+		PhaseID: phaseID,
+		Round:   round,
+		Votes:   votes,
+		Counts:  roundCounts,
+		At:      time.Now().UTC(),
+	}
+	if n := len(a.g.VoteRounds); n > 0 && a.g.VoteRounds[n-1].PhaseID == phaseID {
+		a.g.VoteRounds[n-1] = roundRecord
+	} else {
+		a.g.VoteRounds = append(a.g.VoteRounds, roundRecord)
+	}
+	a.appendLocked(domain.Event{Type: domain.EvVoteResult, PhaseID: phaseID, Text: text})
 	a.persistLocked()
 	a.mu.Unlock()
 }

@@ -353,6 +353,27 @@ func mustJSON(v any) []byte {
 	return b
 }
 
+// A card game hides the deal only while it runs. Hiding it in the lobby made
+// every other seat read back as "human:-" even though the host had just cast
+// it, and the acceptance run rebuilt five rooms chasing that phantom.
+func TestCardGameLobbyShowsAssignedRoles(t *testing.T) {
+	g := fixtureGame()
+	sc := fixtureScript()
+	sc.Mode = domain.ModeCardGame
+	g.Status = domain.RoomLobby
+	if HiddenIdentities(g, sc) {
+		t.Fatal("lobby hides the host's casting")
+	}
+	g.Status = domain.RoomRunning
+	if !HiddenIdentities(g, sc) {
+		t.Fatal("a running deal must stay secret")
+	}
+	g.PhaseIndex = len(sc.Phases) - 1 // reveal
+	if HiddenIdentities(g, sc) {
+		t.Fatal("the reveal opens the deal")
+	}
+}
+
 // A nil slice marshals to `null`, which strict JSON clients reject. Every list a
 // client renders must therefore arrive as an empty array when it is empty.
 func TestVisibleNeverSerialisesNullLists(t *testing.T) {

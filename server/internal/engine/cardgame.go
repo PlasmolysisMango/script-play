@@ -403,6 +403,7 @@ func (a *Actor) awaitPlay(ctx context.Context, gen int, seat domain.Seat) {
 	}
 	gone, stopGone := a.goneWatcher(seat.ID)
 	defer stopGone()
+	invalid := 0
 	for {
 		select {
 		case <-ctx.Done():
@@ -427,12 +428,19 @@ func (a *Actor) awaitPlay(ctx context.Context, gen int, seat domain.Seat) {
 			}
 			ended, err := a.handleCardCommand(seat, msg)
 			if err != nil {
+				// A rejected command must not buy a fresh timeout: an agent that
+				// repeats one malformed card.play used to sit here for minutes,
+				// resetting the clock 388 times. Three refusals and the engine
+				// plays the turn for it.
+				invalid++
 				a.notify(seat, err.Error())
-				if timer != nil {
-					timer.Reset(a.cfg.floor())
+				if invalid >= playInvalidLimit {
+					a.autoPlay(seat, "连续无效出牌，系统自动处理")
+					return
 				}
 				continue
 			}
+			invalid = 0
 			if !ended {
 				if timer != nil {
 					timer.Reset(a.cfg.floor())
@@ -443,6 +451,10 @@ func (a *Actor) awaitPlay(ctx context.Context, gen int, seat domain.Seat) {
 		}
 	}
 }
+
+// playInvalidLimit is how many refused card commands one turn accepts before
+// the timeout path takes over.
+const playInvalidLimit = 3
 
 func (a *Actor) playPromptLocked(seat domain.Seat) string {
 	cs := a.tableLocked()

@@ -63,15 +63,32 @@ export function ReplayPage({ code }: { code: string }) {
   }, [data, roleNames])
 
   // Votes are reconstructed from the log so the replay shows the outcome even
-  // when the truth block has no timeline to hang it on.
-  const votes = useMemo(() => {
-    const casts = (data?.replay ?? []).filter((e) => e.type === 'vote')
-    const result = [...(data?.replay ?? [])].reverse().find((e) => e.type === 'vote.result')
-    return {
-      casts: casts.map((e) => ({ seq: e.seq, text: e.text, who: seatNames[e.seatId] || e.speaker || '有人' })),
-      result: result?.text ?? '',
+  // when the truth block has no timeline to hang it on. Grouping by phase keeps
+  // each round's tally next to its own result; older logs without a phase id
+  // fall back to one "unlabelled" round.
+  const voteRounds = useMemo(() => {
+    type Round = { key: string; title: string; casts: { seq: number; who: string; text: string }[]; results: string[] }
+    const rounds: Round[] = []
+    const byKey = new Map<string, Round>()
+    const phaseNames = new Map((data?.phases ?? []).map((p) => [p.id, p.name]))
+    for (const e of data?.replay ?? []) {
+      if (e.type !== 'vote' && e.type !== 'vote.result') continue
+      const key = e.phaseId || ''
+      let round = byKey.get(key)
+      if (!round) {
+        round = { key, title: phaseNames.get(key) || '投票', casts: [], results: [] }
+        byKey.set(key, round)
+        rounds.push(round)
+      }
+      if (e.type === 'vote') {
+        round.casts.push({ seq: e.seq, text: e.text, who: seatNames[e.seatId] || e.speaker || '有人' })
+      } else {
+        round.results.push(e.text)
+      }
     }
+    return rounds
   }, [data, seatNames])
+  const voteCount = voteRounds.reduce((n, r) => n + r.casts.length, 0)
 
   if (replayQuery.isLoading) return <Spinner label="正在读取复盘…" />
   if (!data) {
@@ -141,21 +158,34 @@ export function ReplayPage({ code }: { code: string }) {
 
       <aside className="space-y-4">
         <div className="sheet">
-          <SectionTitle aside={<span className="text-xs text-slate-500">{votes.casts.length} 票</span>}>投票结果</SectionTitle>
-          {votes.result ? (
-            <p className="mb-2 rounded-lg border border-rose-500/30 bg-rose-950/20 px-2 py-1 text-sm text-rose-100">{votes.result}</p>
-          ) : null}
-          {votes.casts.length === 0 ? (
+          <SectionTitle aside={<span className="text-xs text-slate-500">{voteCount} 票</span>}>投票结果</SectionTitle>
+          {voteRounds.length === 0 ? (
             <p className="text-xs text-slate-500">本局没有进入投票，或没有人投票。</p>
           ) : (
-            <ul className="space-y-1 text-xs">
-              {votes.casts.map((v) => (
-                <li key={v.seq} className="flex items-start justify-between gap-2 rounded-lg px-2 py-1">
-                  <span className="text-slate-300">{v.who}</span>
-                  <span className="text-right text-slate-500">{v.text}</span>
-                </li>
+            <div className="space-y-3">
+              {voteRounds.map((round) => (
+                <div key={round.key || 'unlabelled'}>
+                  <p className="mb-1 text-[11px] uppercase tracking-wide text-slate-500">{round.title}</p>
+                  {round.results.map((text, i) => (
+                    <p key={i} className="mb-1 rounded-lg border border-rose-500/30 bg-rose-950/20 px-2 py-1 text-sm text-rose-100">
+                      {text}
+                    </p>
+                  ))}
+                  {round.casts.length === 0 ? (
+                    <p className="text-xs text-slate-500">这一轮没有人投票。</p>
+                  ) : (
+                    <ul className="space-y-1 text-xs">
+                      {round.casts.map((v) => (
+                        <li key={v.seq} className="flex items-start justify-between gap-2 rounded-lg px-2 py-1">
+                          <span className="text-slate-300">{v.who}</span>
+                          <span className="text-right text-slate-500">{v.text}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
               ))}
-            </ul>
+            </div>
           )}
         </div>
 
