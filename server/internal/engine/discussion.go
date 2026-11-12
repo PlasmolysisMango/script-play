@@ -160,9 +160,9 @@ func (a *Actor) queueWantsLocked(speakerID, text string) {
 // longer ends by itself, the host decides. Meanwhile anybody may ask for the
 // floor, an answered seat answers first, and declining is a normal move.
 //
-// A table where nobody speaks must not pin the room: after DiscussIdle of
-// silence the floor closes and the walk moves on. Without that, an abandoned
-// discussion sat there for as long as the host's browser stayed open.
+// A clock-driven table where nobody speaks must not pin the room: after
+// DiscussIdle of silence the floor closes and the walk moves on. Host-driven
+// and unlimited rooms have no idle timer and only advance on the host's click.
 func (a *Actor) freeTalk(ctx context.Context, gen int, ph *domain.Phase) {
 	wctx, stopWait := context.WithCancel(ctx)
 	defer stopWait()
@@ -179,7 +179,7 @@ func (a *Actor) freeTalk(ctx context.Context, gen int, ph *domain.Phase) {
 	// Requests typed during the scripted round stay queued: they were told they
 	// had a place in line, so dropping them here would make the table look deaf.
 	text := "进入自由讨论：想发言随时开口，同一时刻只有一个人说话；说完点「结束发言」把机会让给别人，主持人进入下一阶段时本阶段结束。"
-	if idle := a.cfg.DiscussIdle; idle > 0 {
+	if idle := a.cfg.discussIdle(); idle > 0 {
 		text = fmt.Sprintf("进入自由讨论：想发言随时开口，同一时刻只有一个人说话；说完点「结束发言」把机会让给别人。主持人进入下一阶段时本阶段结束；连续 %d 秒无人发言会自动推进。", int(idle.Seconds()))
 	}
 	a.appendLocked(domain.Event{
@@ -232,7 +232,7 @@ const (
 
 // parkTalk waits for the next request while the floor is idle.
 func (a *Actor) parkTalk(wctx context.Context, last time.Time) int {
-	idle := a.cfg.DiscussIdle
+	idle := a.cfg.discussIdle()
 	if idle <= 0 {
 		select {
 		case <-wctx.Done():
@@ -271,7 +271,7 @@ func (a *Actor) endIdleDiscussion(ctx context.Context, gen int, ph *domain.Phase
 	a.appendLocked(domain.Event{
 		Type:    domain.EvSystem,
 		PhaseID: ph.ID,
-		Text:    fmt.Sprintf("连续 %d 秒无人发言，本阶段自动结束", int(a.cfg.DiscussIdle.Seconds())),
+		Text:    fmt.Sprintf("连续 %d 秒无人发言，本阶段自动结束", int(a.cfg.discussIdle().Seconds())),
 	})
 	a.persistLocked()
 	a.mu.Unlock()

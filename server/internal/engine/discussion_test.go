@@ -146,6 +146,83 @@ func floorOf(a *Actor, seatID string) *Floor {
 	return st.Floor
 }
 
+// Rooms that opted out of clocks must not have their open discussion advanced
+// by the silence timer either; only the host decides when the phase ends.
+func TestHostControlledDiscussionIgnoresIdleTimer(t *testing.T) {
+	cases := []struct {
+		name string
+		cfg  ActorConfig
+	}{
+		{
+			name: "unlimited",
+			cfg: ActorConfig{
+				FloorTimeout: 2 * time.Second,
+				AgentTimeout: 2 * time.Second,
+				Unlimited:    true,
+				DiscussIdle:  120 * time.Millisecond,
+			},
+		},
+		{
+			name: "wait-for-host",
+			cfg: ActorConfig{
+				FloorTimeout: 2 * time.Second,
+				AgentTimeout: 2 * time.Second,
+				WaitForHost:  true,
+				DiscussIdle:  120 * time.Millisecond,
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sc := fixtureScript()
+			sc.Phases = []domain.Phase{{
+				ID: "p1", Type: domain.PhaseDiscussion, Name: "公聊",
+				SpeechPerPlayer: 1, Order: domain.OrderRoundRobin,
+			}}
+			a := humanTable(t, sc, tc.cfg)
+
+			for passed := 0; passed < 3; passed++ {
+				holder := ""
+				waitFor(t, 5*time.Second, func() bool {
+					for _, id := range []string{"seat1", "seat2", "seat3"} {
+						st, ok := a.StateForSeat(id)
+						if ok && st.Floor != nil && st.Floor.SeatID == id {
+							holder = id
+							return true
+						}
+					}
+					return false
+				})
+				mustHandle(t, a, holder, ClientMessage{Type: "speak.pass"})
+				released := holder
+				waitFor(t, 5*time.Second, func() bool {
+					st, _ := a.StateForSeat(released)
+					return st.Floor == nil || st.Floor.SeatID != released
+				})
+			}
+
+			waitFor(t, 5*time.Second, func() bool {
+				st, ok := a.StateForSeat("seat1")
+				return ok && st.TalkOpen
+			})
+			time.Sleep(400 * time.Millisecond)
+
+			snap := a.Snapshot()
+			if snap.PhaseIndex != 0 || snap.Status != domain.RoomRunning {
+				t.Fatalf("discussion advanced without the host: phase=%d status=%s", snap.PhaseIndex, snap.Status)
+			}
+			for _, ev := range snap.Events {
+				if strings.Contains(ev.Text, "无人发言") || strings.Contains(ev.Text, "自动结束") {
+					t.Fatalf("idle timer fired in a host-controlled room: %q", ev.Text)
+				}
+			}
+			if st, _ := a.StateForSeat("seat1"); !st.TalkOpen {
+				t.Fatal("free discussion should stay open")
+			}
+		})
+	}
+}
+
 // The answer to a line goes to the front of the queue: the seat that was
 // addressed holds the floor next, before the seats that were already waiting.
 func TestReplyMovesTheAnsweredSeatToTheFront(t *testing.T) {

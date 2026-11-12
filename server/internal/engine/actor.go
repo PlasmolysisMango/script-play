@@ -75,8 +75,8 @@ type ActorConfig struct {
 	// replay, headless runs) means "assume everybody is here".
 	Presence func(seatID string) bool
 	// DiscussIdle ends an open discussion nobody has spoken in for this long.
-	// Zero disables the timer, which is what the old behaviour amounted to: the
-	// phase sat there until the host clicked, however long that took.
+	// It only applies to clock-driven rooms: "不限时" and "等主持人推进" leave
+	// every advance to the host. Zero disables the timer outright.
 	DiscussIdle time.Duration
 	// ReadingMin is the least time a reading/opening scene stays on screen,
 	// so a host mashing "next" cannot skip the role books entirely.
@@ -88,6 +88,15 @@ func (c ActorConfig) floor() time.Duration {
 		return 90 * time.Second
 	}
 	return c.FloorTimeout
+}
+
+// discussIdle is the effective silence timer. Host-driven and unlimited rooms
+// must not advance a discussion behind the host's back.
+func (c ActorConfig) discussIdle() time.Duration {
+	if c.Unlimited || c.WaitForHost {
+		return 0
+	}
+	return c.DiscussIdle
 }
 
 func (c ActorConfig) agent() time.Duration {
