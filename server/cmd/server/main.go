@@ -16,9 +16,7 @@ import (
 	"syscall"
 	"time"
 
-	"script-play/internal/auth"
 	"script-play/internal/config"
-	"script-play/internal/domain"
 	"script-play/internal/httpapi"
 	"script-play/internal/importer"
 	"script-play/internal/llm"
@@ -56,18 +54,6 @@ func run(grace time.Duration) error {
 		// A misconfigured admin must not keep the whole game server down: users
 		// can still play, only the console stays locked.
 		slog.Warn("admin bootstrap failed", "err", err)
-	}
-	// The system account only exists to own the bundled sample script, so it is
-	// created on the first boot that actually needs to seed it. Deployments that
-	// tidy their user table keep the table tidy across restarts.
-	if !httpapi.HasSampleScript(st) {
-		sysUser, err := ensureSystemUser(st)
-		if err != nil {
-			return fmt.Errorf("system user: %w", err)
-		}
-		if err := httpapi.SeedSample(st, sysUser); err != nil {
-			slog.Warn("seed sample script failed", "err", err)
-		}
 	}
 
 	// The root context is cancelled on SIGINT/SIGTERM and stops every actor.
@@ -167,31 +153,4 @@ func lookQoder(bin string) (string, error) {
 		return "", fmt.Errorf("%s is not an executable file", bin)
 	}
 	return exec.LookPath(bin)
-}
-
-// ensureSystemUser makes sure the sample script has a stable owner.
-func ensureSystemUser(st *store.Store) (*domain.User, error) {
-	const username = "narrator"
-	if u, err := st.UserByUsername(username); err == nil {
-		return u, nil
-	}
-	hash, err := auth.HashPassword(store.NewID("pw") + store.NewID("pw"))
-	if err != nil {
-		return nil, err
-	}
-	u := &domain.User{
-		ID:           store.NewID("user"),
-		Username:     username,
-		DisplayName:  "系统主持人",
-		PasswordHash: hash,
-		CreatedAt:    time.Now().UTC(),
-	}
-	if err := st.CreateUser(u); err != nil {
-		// Lost the race with another boot; read it back.
-		if existing, getErr := st.UserByUsername(username); getErr == nil {
-			return existing, nil
-		}
-		return nil, err
-	}
-	return u, nil
 }

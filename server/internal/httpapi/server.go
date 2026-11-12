@@ -67,7 +67,6 @@ func (s *Server) routes() {
 	// The script library is curated: only admins import or edit scripts, while
 	// every signed-in user can list and read the published ones to host a room.
 	m.HandleFunc("POST /api/scripts", s.withAdmin(s.handleCreateScript))
-	m.HandleFunc("POST /api/scripts/sample", s.withAdmin(s.handleSeedSample))
 	m.HandleFunc("GET /api/scripts/{id}", s.withAuth(s.handleGetScript))
 	m.HandleFunc("PUT /api/scripts/{id}", s.withAdmin(s.handleUpdateScript))
 	m.HandleFunc("POST /api/scripts/{id}/publish", s.withAdmin(s.handlePublishScript))

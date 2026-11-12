@@ -178,6 +178,7 @@ func newE2EServer(t *testing.T, provider string, floor, agent time.Duration) *ht
 	t.Cleanup(manager.Close)
 	imp := importer.New(st)
 	srv := New(cfg, st, reg, manager, imp)
+	srv.mountTestSampleRoute()
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 	return ts

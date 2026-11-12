@@ -82,7 +82,9 @@ func newTestServer(t *testing.T) (*Server, *store.Store) {
 	manager := rooms.NewManager(t.Context(), st, hub, reg, cfg)
 	t.Cleanup(manager.Close)
 	imp := importer.New(st)
-	return New(cfg, st, reg, manager, imp), st
+	srv := New(cfg, st, reg, manager, imp)
+	srv.mountTestSampleRoute()
+	return srv, st
 }
 
 func TestHealthAndAuthFlow(t *testing.T) {

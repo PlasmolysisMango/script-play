@@ -100,15 +100,6 @@ export function LobbyPage() {
     onError: (err) => notify(err instanceof ApiError ? err.message : String(err), 'error'),
   })
 
-  const seed = useMutation({
-    mutationFn: api.seedSample,
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['scripts'] })
-      notify('示例剧本《雨夜灯塔》已就绪')
-    },
-    onError: (err) => notify(err instanceof ApiError ? err.message : String(err), 'error'),
-  })
-
   const join = useMutation({
     mutationFn: () => api.joinRoom(joinCode.trim().toUpperCase(), {}),
     onSuccess: (room) => navigate('room', room.code),
@@ -155,10 +146,7 @@ export function LobbyPage() {
               <Empty>还没有已发布的剧本。</Empty>
               {isAdmin ? (
                 <div className="flex flex-wrap gap-2">
-                  <button type="button" className="btn-primary" onClick={() => seed.mutate()} disabled={seed.isPending}>
-                    导入内置示例《雨夜灯塔》
-                  </button>
-                  <button type="button" className="btn-ghost" onClick={() => navigate('studio')}>
+                  <button type="button" className="btn-primary" onClick={() => navigate('studio')}>
                     去剧本工作台新建
                   </button>
                 </div>

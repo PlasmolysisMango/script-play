@@ -44,7 +44,7 @@ SP_ADMIN_USERNAME=admin SP_ADMIN_PASSWORD=change-me   # 启动时创建或提权
 ```
 
 `SP_ADMIN_PASSWORD` 只在账号不存在时需要；账号已存在且未给密码时只提权、不改密码。
-管理员额外拥有：剧本库全量读写（含内置示例）、原件归档入口、`/api/admin/*` 管理台。
+管理员额外拥有：剧本库全量读写、原件归档入口、`/api/admin/*` 管理台。
 
 ## 2. 元信息
 
@@ -71,7 +71,6 @@ SP_ADMIN_USERNAME=admin SP_ADMIN_PASSWORD=change-me   # 启动时创建或提权
 | POST | `/api/scripts/{id}/draft` | 把已发布版本复制成可编辑草稿（版本号沿用，发布后 +1） |
 | POST | `/api/scripts/{id}/publish` | 校验通过后发布；失败返回 422 + `{errors: ValidationError[]}`；重复发布幂等 |
 | DELETE | `/api/scripts/{id}` | 仅作者或管理员 |
-| POST | `/api/scripts/sample` | 管理员：一键导入内置示例剧本并发布 |
 | POST | `/api/scripts/{id}/media` | 管理员：`multipart/form-data`，字段 `file`（也接受 `image`/`files`）；png/jpg/jpeg/webp/gif，单张 ≤ 8 MB；返回 `201 {url, name, size, mime}` |
 | GET | `/media/{id}/{name}` | 图片回放（免登录）；`Content-Type` 只由扩展名决定并带 `nosniff`，缺失或不在白名单返回 404 |
 | GET | `/script-assets/{剧本目录}/{路径}` | 随剧本固化的图（`scripts/<剧本目录>/images/…`，免登录）；只放行图片扩展名，`script.json` 拿不到，`Cache-Control: max-age=3600` |

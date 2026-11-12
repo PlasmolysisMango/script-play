@@ -190,9 +190,6 @@ export const api = {
     form.append('file', file)
     return request(`/api/scripts/${id}/media`, { method: 'POST', body: form })
   },
-  async seedSample(): Promise<ScriptResponse> {
-    return request<ScriptResponse>('/api/scripts/sample', { method: 'POST' })
-  },
   /** Uploaded originals: stored verbatim, never parsed. */
   async materials(): Promise<{ materials: RawMaterial[]; dir: string; maxUploadMB: number }> {
     const res = await request<{ materials: unknown[]; dir?: string; maxUploadMB?: number }>(

@@ -1,7 +1,8 @@
 package httpapi
 
-// SampleScriptJSON is an original four-player script used by the sample
-// endpoint and by the first-run seed. It is fictional and tiny on purpose.
+import "net/http"
+
+// SampleScriptJSON is a small fictional fixture shared by the API tests.
 const SampleScriptJSON = `{
   "schemaVersion": 1,
   "meta": {
@@ -109,3 +110,27 @@ const SampleScriptJSON = `{
     {"id": "f3", "text": "灯塔维修款由维保工程师周叙经手，账目由死者保管。"}
   ]
 }`
+
+// mountTestSampleRoute keeps the old one-click fixture endpoint available to
+// tests without shipping it in the product.
+func (s *Server) mountTestSampleRoute() {
+	s.mux.HandleFunc("POST /api/scripts/sample", s.withAdmin(s.handleSeedTestSample))
+}
+
+func (s *Server) handleSeedTestSample(w http.ResponseWriter, r *http.Request) {
+	u := currentUser(r)
+	rec, verrs, err := s.imp.FromJSON(u.ID, []byte(SampleScriptJSON))
+	if err != nil {
+		fail(w, http.StatusInternalServerError, err)
+		return
+	}
+	if len(verrs) > 0 {
+		writeJSON(w, http.StatusOK, map[string]any{"script": rec, "errors": verrs})
+		return
+	}
+	if _, err := s.imp.Publish(rec); err != nil {
+		fail(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"script": rec})
+}

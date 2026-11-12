@@ -3,13 +3,11 @@ package httpapi
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"time"
 
 	"script-play/internal/domain"
-	"script-play/internal/store"
 )
 
 type scriptSummary struct {
@@ -56,7 +54,7 @@ func (s *Server) handleListScripts(w http.ResponseWriter, r *http.Request) {
 	recs := s.store.ListScripts(u.ID)
 	if u.IsAdmin() {
 		// The library is curated by admins: they need to see drafts that other
-		// admin accounts (or the seeding system account) own.
+		// admin accounts own.
 		recs = s.store.AllScripts()
 	}
 	out := make([]scriptSummary, 0, len(recs))
@@ -66,8 +64,7 @@ func (s *Server) handleListScripts(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"scripts": out})
 }
 
-// ownsScript reports whether u may edit rec. Admins curate the whole library,
-// which also keeps the seeded sample (owned by the system account) editable.
+// ownsScript reports whether u may edit rec. Admins curate the whole library.
 func ownsScript(u *domain.User, rec *domain.ScriptRecord) bool {
 	return u.IsAdmin() || rec.OwnerUserID == u.ID
 }
@@ -131,24 +128,6 @@ func (s *Server) handleCreateScript(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{"script": rec, "errors": verrs})
-}
-
-func (s *Server) handleSeedSample(w http.ResponseWriter, r *http.Request) {
-	u := currentUser(r)
-	rec, verrs, err := s.imp.FromJSON(u.ID, []byte(SampleScriptJSON))
-	if err != nil {
-		fail(w, http.StatusInternalServerError, err)
-		return
-	}
-	if len(verrs) > 0 {
-		writeJSON(w, http.StatusOK, map[string]any{"script": rec, "errors": verrs})
-		return
-	}
-	if _, err := s.imp.Publish(rec); err != nil {
-		fail(w, http.StatusInternalServerError, err)
-		return
-	}
-	writeJSON(w, http.StatusCreated, map[string]any{"script": rec})
 }
 
 func (s *Server) handleUpdateScript(w http.ResponseWriter, r *http.Request) {
@@ -241,44 +220,4 @@ func (s *Server) handleDeleteScript(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
-}
-
-// sampleTitle identifies the bundled example, which is seeded exactly once.
-const sampleTitle = "雨夜灯塔（示例）"
-
-// HasSampleScript reports whether the example is already in the library. When it
-// is, boot needs no system owner account at all.
-func HasSampleScript(st *store.Store) bool {
-	for _, rec := range st.ListScripts("") {
-		if rec.Body != nil && rec.Body.Meta.Title == sampleTitle {
-			return true
-		}
-	}
-	return false
-}
-
-// SeedSample inserts the sample script on first boot.
-func SeedSample(st *store.Store, sysUser *domain.User) error {
-	if HasSampleScript(st) {
-		return nil
-	}
-	var sc domain.Script
-	if err := json.Unmarshal([]byte(SampleScriptJSON), &sc); err != nil {
-		return err
-	}
-	if errs := sc.Validate(); len(errs) > 0 {
-		return fmt.Errorf("示例剧本校验失败：%v", errs[0])
-	}
-	now := time.Now().UTC()
-	st.PutScript(&domain.ScriptRecord{
-		ID:          store.NewID("script"),
-		OwnerUserID: sysUser.ID,
-		Status:      "published",
-		Version:     1,
-		CreatedAt:   now,
-		UpdatedAt:   now,
-		Source:      "sample",
-		Body:        &sc,
-	})
-	return nil
 }
