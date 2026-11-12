@@ -352,6 +352,9 @@ function MetaSection({
         <Field label="作者">
           <input className="input text-xs" value={meta.author ?? ''} disabled={disabled} onChange={(e) => patch({ author: e.target.value })} />
         </Field>
+        <Field label="系列" hint="如「K的游戏」「AI创作」；没有特定系列就留空">
+          <input className="input text-xs" value={meta.series ?? ''} disabled={disabled} onChange={(e) => patch({ series: e.target.value })} />
+        </Field>
         <Field label="最少人数">
           <input
             type="number"

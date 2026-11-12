@@ -15,6 +15,7 @@ import (
 type scriptSummary struct {
 	ID        string            `json:"id"`
 	Title     string            `json:"title"`
+	Series    string            `json:"series,omitempty"`
 	Summary   string            `json:"summary,omitempty"`
 	Status    string            `json:"status"`
 	Version   int               `json:"version"`
@@ -40,6 +41,7 @@ func summarise(rec *domain.ScriptRecord, userID string) scriptSummary {
 	}
 	if rec.Body != nil {
 		out.Title = rec.Body.Meta.Title
+		out.Series = rec.Body.Meta.Series
 		out.Summary = rec.Body.Meta.Summary
 		out.Tags = rec.Body.Meta.Tags
 		out.Roles = len(rec.Body.Roles)

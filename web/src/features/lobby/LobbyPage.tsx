@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, ApiError } from '../../api/client'
 import { useApp } from '../../store/app'
 import { Empty, Field, Hint, SectionTitle, Spinner, Tag } from '../../components/ui'
 import { SPEECH_PRESETS, SPEECH_UNLIMITED, isUnlimitedSpeech, speechLimitLabel } from '../../lib/speech'
 import type { Room } from '../../types/schema'
+import { NO_SERIES, filterScripts, scriptSeries, scriptTags } from './filter'
 
 export function LobbyPage() {
   const navigate = useApp((s) => s.navigate)
@@ -14,6 +15,9 @@ export function LobbyPage() {
 
   const [name, setName] = useState('')
   const [scriptId, setScriptId] = useState('')
+  const [seriesFilter, setSeriesFilter] = useState('')
+  const [tagFilter, setTagFilter] = useState('')
+  const [scriptQuery, setScriptQuery] = useState('')
   const [maxSeats, setMaxSeats] = useState(4)
   const [allowSpectator, setAllowSpectator] = useState(true)
   const [speechSeconds, setSpeechSeconds] = useState(0)
@@ -28,6 +32,18 @@ export function LobbyPage() {
   const rooms = useQuery({ queryKey: ['rooms'], queryFn: api.listRooms, refetchInterval: 5000 })
 
   const published = useMemo(() => (scripts.data ?? []).filter((s) => s.status === 'published'), [scripts.data])
+  const seriesOptions = useMemo(() => scriptSeries(published), [published])
+  const tagOptions = useMemo(() => scriptTags(published), [published])
+  const filtered = useMemo(
+    () => filterScripts(published, { series: seriesFilter, tag: tagFilter, query: scriptQuery }),
+    [published, seriesFilter, tagFilter, scriptQuery],
+  )
+  const filtersActive = seriesFilter !== '' || tagFilter !== '' || scriptQuery.trim() !== ''
+  const resetScriptFilters = () => {
+    setSeriesFilter('')
+    setTagFilter('')
+    setScriptQuery('')
+  }
   // Three groups, so a finished room never reads as "进行中".
   const groups = useMemo(() => {
     const live = (rooms.data ?? []).filter((r) => r.status === 'running')
@@ -39,7 +55,12 @@ export function LobbyPage() {
       { key: 'finished', title: '已结束', hint: '可以看复盘', rooms: done },
     ]
   }, [rooms.data])
-  const chosenId = scriptId || published[0]?.id || ''
+  // Keep the selected script while it is visible; when a filter hides it, fall
+  // back to the first match so the create-room form always names a real script.
+  const chosenId = useMemo(() => {
+    if (scriptId && filtered.some((s) => s.id === scriptId)) return scriptId
+    return filtered[0]?.id || ''
+  }, [scriptId, filtered])
   const chosen = useMemo(() => published.find((s) => s.id === chosenId), [published, chosenId])
   // The script decides the cast: a fixed count locks the room to exactly that
   // many seats, a flexible one only allows its advertised range. The server
@@ -61,11 +82,10 @@ export function LobbyPage() {
 
   const createRoom = useMutation({
     mutationFn: async () => {
-      const chosen = scriptId || published[0]?.id
-      if (!chosen) throw new Error('请先准备一个已发布的剧本')
+      if (!chosenId) throw new Error(filtersActive ? '当前筛选下没有可选的剧本' : '请先准备一个已发布的剧本')
       return api.createRoom({
         name: name.trim() || undefined,
-        scriptId: chosen,
+        scriptId: chosenId,
         maxSeats: seatFixed ? seatMax : maxSeats,
         allowSpectator,
         speechSeconds,
@@ -147,26 +167,77 @@ export function LobbyPage() {
               )}
             </div>
           ) : (
-            <ul className="space-y-2">
-              {published.map((s) => (
-                <li key={s.id} className="flex flex-wrap items-center justify-between gap-2 border-b border-line py-2 last:border-0">
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm font-medium">{s.title || '未命名剧本'}</p>
-                    <p className="text-xs text-slate-500">
-                      {s.roles} 角色 · {s.clues} 线索 · {s.playerCount ? (s.playerCount.min === s.playerCount.max ? `${s.playerCount.max} 人` : `${s.playerCount.min}-${s.playerCount.max} 人`) : '人数待定'} · v{s.version}
-                    </p>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    {s.tags?.slice(0, 2).map((t) => (
-                      <Tag key={t}>{t}</Tag>
-                    ))}
-                    <button type="button" className="btn-ghost text-xs" onClick={() => setScriptId(s.id)}>
-                      选中
+            <div className="space-y-3">
+              <div className="space-y-2 rounded-xl border border-line/70 p-3">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span className="mr-1 text-xs text-slate-400">系列</span>
+                  <FilterChip active={seriesFilter === ''} onClick={() => setSeriesFilter('')}>
+                    全部
+                  </FilterChip>
+                  {seriesOptions.map((series) => (
+                    <FilterChip key={series} active={seriesFilter === series} onClick={() => setSeriesFilter(series)}>
+                      {series}
+                    </FilterChip>
+                  ))}
+                  <FilterChip active={seriesFilter === NO_SERIES} onClick={() => setSeriesFilter(NO_SERIES)}>
+                    未分系列
+                  </FilterChip>
+                </div>
+                <div className="grid gap-2 sm:grid-cols-[1fr_1.4fr_auto]">
+                  <Field label="标签">
+                    <select className="input text-xs" value={tagFilter} onChange={(e) => setTagFilter(e.target.value)}>
+                      <option value="">全部标签</option>
+                      {tagOptions.map((tag) => (
+                        <option key={tag} value={tag}>
+                          {tag}
+                        </option>
+                      ))}
+                    </select>
+                  </Field>
+                  <Field label="关键词">
+                    <input
+                      className="input text-xs"
+                      value={scriptQuery}
+                      onChange={(e) => setScriptQuery(e.target.value)}
+                      placeholder="剧本名、简介或标签"
+                    />
+                  </Field>
+                  <div className="flex items-end">
+                    <button type="button" className="btn-ghost text-xs" onClick={resetScriptFilters} disabled={!filtersActive}>
+                      清除筛选
                     </button>
                   </div>
-                </li>
-              ))}
-            </ul>
+                </div>
+                <p className="text-[11px] text-slate-500">
+                  共 {published.length} 本，当前显示 {filtered.length} 本
+                </p>
+              </div>
+              {filtered.length === 0 ? (
+                <Empty>没有符合筛选条件的剧本。</Empty>
+              ) : (
+                <ul className="space-y-2">
+                  {filtered.map((s) => (
+                    <li key={s.id} className="flex flex-wrap items-center justify-between gap-2 border-b border-line py-2 last:border-0">
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-medium">{s.title || '未命名剧本'}</p>
+                        <p className="text-xs text-slate-500">
+                          {s.roles} 角色 · {s.clues} 线索 · {s.playerCount ? (s.playerCount.min === s.playerCount.max ? `${s.playerCount.max} 人` : `${s.playerCount.min}-${s.playerCount.max} 人`) : '人数待定'} · v{s.version}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {s.series ? <Tag tone="blue">{s.series}</Tag> : null}
+                        {s.tags?.slice(0, 2).map((t) => (
+                          <Tag key={t}>{t}</Tag>
+                        ))}
+                        <button type="button" className="btn-ghost text-xs" onClick={() => setScriptId(s.id)}>
+                          选中
+                        </button>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
           )}
         </div>
       </section>
@@ -174,11 +245,12 @@ export function LobbyPage() {
       <aside className="space-y-5">
         <div className="card space-y-4">
           <SectionTitle>开一个新房间</SectionTitle>
-          <Field label="剧本">
-            <select className="input" value={scriptId || published[0]?.id || ''} onChange={(e) => setScriptId(e.target.value)}>
-              {published.length === 0 ? <option value="">（暂无已发布剧本）</option> : null}
-              {published.map((s) => (
+          <Field label="剧本" hint={filtersActive ? `受剧本库筛选影响，当前 ${filtered.length} 本可选` : undefined}>
+            <select className="input" value={chosenId} onChange={(e) => setScriptId(e.target.value)}>
+              {filtered.length === 0 ? <option value="">（当前筛选无剧本）</option> : null}
+              {filtered.map((s) => (
                 <option key={s.id} value={s.id}>
+                  {s.series ? `[${s.series}] ` : ''}
                   {s.title}
                 </option>
               ))}
@@ -246,7 +318,7 @@ export function LobbyPage() {
               </select>
             </Field>
           </div>
-          <button type="button" className="btn-primary w-full" onClick={() => createRoom.mutate()} disabled={createRoom.isPending || published.length === 0}>
+          <button type="button" className="btn-primary w-full" onClick={() => createRoom.mutate()} disabled={createRoom.isPending || filtered.length === 0}>
             {createRoom.isPending ? '创建中…' : hostOnly ? '创建房间（我只当主持人）' : '创建房间并占座'}
           </button>
         </div>
@@ -268,6 +340,21 @@ export function LobbyPage() {
         </div>
       </aside>
     </div>
+  )
+}
+
+function FilterChip({ active, onClick, children }: { active: boolean; onClick: () => void; children: ReactNode }) {
+  return (
+    <button
+      type="button"
+      aria-pressed={active}
+      onClick={onClick}
+      className={`rounded-full border px-2.5 py-1 text-xs transition ${
+        active ? 'border-accent/60 bg-accent/10 text-accent' : 'border-line text-slate-400 hover:border-accent/40 hover:text-slate-200'
+      }`}
+    >
+      {children}
+    </button>
   )
 }
 

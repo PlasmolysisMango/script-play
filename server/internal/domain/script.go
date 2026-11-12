@@ -86,6 +86,7 @@ type Script struct {
 type Meta struct {
 	Title       string     `json:"title"`
 	Author      string     `json:"author,omitempty"`
+	Series      string     `json:"series,omitempty"`
 	Summary     string     `json:"summary,omitempty"`
 	Difficulty  string     `json:"difficulty,omitempty"`
 	Tags        []string   `json:"tags,omitempty"`

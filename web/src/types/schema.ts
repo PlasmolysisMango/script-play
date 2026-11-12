@@ -386,6 +386,7 @@ export type GameEvent = z.infer<typeof gameEventSchema>
 export const scriptSummarySchema = z.object({
   id: z.string(),
   title: z.string().optional().default(''),
+  series: z.string().optional().default(''),
   summary: z.string().optional().default(''),
   status: z.string(),
   version: z.number().optional().default(1),

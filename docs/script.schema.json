@@ -76,6 +76,10 @@
         "author": {
           "type": "string"
         },
+        "series": {
+          "type": "string",
+          "description": "系列标签，如「K的游戏」「AI创作」；没有特定系列时留空。大厅按此字段筛选。"
+        },
         "summary": {
           "type": "string"
         },

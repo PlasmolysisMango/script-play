@@ -48,7 +48,7 @@ cd server && SP_ADMIN_USERNAME=admin SP_ADMIN_PASSWORD='换成你的密码' go r
 4. **可视化编辑**：左侧点中任一剧本即可编辑，草稿与已发布没有区别（已发布剧本保存即发布新版本，
    版本号 +1；进行中的对局仍用开局时那一版，新开的房间用新版本；已发布剧本只接受能通过校验的内容）。
    编辑器分六段，覆盖 schema 的全部字段，列表项都能增删与上下移动：
-   - **基础信息**：标题、作者、简介、人数上下限、难度、时长、标签；
+   - **基础信息**：标题、作者、系列、简介、人数上下限、难度、时长、标签；
    - **阶段**：类型、名称、轮次、顺序策略、搜证方式、搜证/发言次数、超时、线索池、主持人手册；
    - **角色**：公开人设、公开介绍、私密剧本、秘密表（`revealCost`）、本局目标、初始已知事实；
    - **线索**：标题、卡背、地点、归属角色、是否公开、正文、配图、指向的角色/秘密/事实；
@@ -118,7 +118,7 @@ cd server && go run ./cmd/scriptcheck ../scripts/K11-再见苏西/script.json
 ```json
 {
   "schemaVersion": 1,
-  "meta": { "title": "...", "playerCount": { "min": 4, "max": 6 } },
+  "meta": { "title": "...", "series": "K的游戏", "playerCount": { "min": 4, "max": 6 } },
   "truth": { "killerRoleId": "r2" },
   "phases": [],
   "roles": [],
@@ -157,7 +157,7 @@ cd server && go run ./cmd/scriptcheck ../scripts/K11-再见苏西/script.json
 
 | 分组 | 字段 |
 |---|---|
-| `meta` | `title`、`author`—、`summary`—、`difficulty`—（`easy`/`medium`/`hard`/空）、`tags`—、`playerCount{min,max}`、`durationMin`— |
+| `meta` | `title`、`author`—、`series`—（系列标签，如 `K的游戏`/`AI创作`）、`summary`—、`difficulty`—（`easy`/`medium`/`hard`/空）、`tags`—、`playerCount{min,max}`、`durationMin`— |
 | `phases[]` | `id`、`type`（`reading`/`opening`/`search`/`discussion`/`vote`/`reveal`）、`name`、`round`—、`dmScript`—（主持人手册，Markdown）、`cluePool`—（线索 id 数组）、`perPlayerPick`—（搜证段必填）、`speechPerPlayer`—（讨论段必填）、`searchMode`—、`revealOnFind`—（搜证段：搜到即公开）、`order`—、`timeoutSec`— |
 | `roles[]` | `id`、`name`、`personaId`—、`public{intro,appearance}`—、`private{script,secrets[],goals[],knownFactIds[]}` |
 | `clues[]` | `id`、`title`、`content`（Markdown）、`location`—、`back`—（卡背，搜证选项只露这一行）、`ownerRoleId`—、`subjectRoleId`—、`mustReveal`—、`isPublic`—、`grantsItem`—、`requiresItems`—、`unlockedBy`—、`keywords`—、`imageUrl`—、`links{roles,secrets,facts}`— |

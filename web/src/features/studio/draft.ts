@@ -94,6 +94,8 @@ export type Truth = {
 export type Meta = {
   title?: string
   author?: string
+  /** 系列标签，如「K的游戏」「AI创作」；没有特定系列时留空。 */
+  series?: string
   summary?: string
   difficulty?: string
   tags?: string[]
@@ -193,7 +195,7 @@ export function orderHint(order?: string): string {
 export function blankScript(): ScriptBody {
   return {
     schemaVersion: 1,
-    meta: { title: '未命名剧本', playerCount: { min: 4, max: 6 }, tags: [] },
+    meta: { title: '未命名剧本', series: '', playerCount: { min: 4, max: 6 }, tags: [] },
     truth: { killerRoleId: '' },
     roles: [],
     clues: [],
