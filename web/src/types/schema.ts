@@ -143,6 +143,10 @@ export const truthSchema = z.object({
   killerRoleId: z.string().optional().default(''),
   /** 多案/多凶手剧本：揭晓时按这个列表逐个点名。 */
   killerRoleIds: z.array(z.string()).nullish().transform((v) => v ?? []),
+  /** seat / npc / multiple；空表示按角色列表推断。 */
+  killerKind: z.string().optional().default(''),
+  /** NPC 真凶的姓名（不在座）。 */
+  killerName: z.string().optional().default(''),
   method: z.string().optional().default(''),
   motive: z.string().optional().default(''),
   timeline: z.array(z.string()).nullish().transform((v) => v ?? []),

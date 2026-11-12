@@ -20,6 +20,16 @@ type LeakGuard struct {
 
 const minLeakRun = 8 // runes; shorter overlaps are usually generic phrasing
 
+// promptEcho reports a reply that read the private prompt back to the table.
+func promptEcho(text string) (string, bool) {
+	for _, marker := range []string{"【你的秘密", "【可见信息】", "【你的角色本】", "【公开发言记录】"} {
+		if strings.Contains(text, marker) {
+			return marker, true
+		}
+	}
+	return "", false
+}
+
 // NewLeakGuard collects the texts this seat must never quote: the truth and
 // every other role's secrets.
 func NewLeakGuard(sc *domain.Script, seat *domain.Seat, visible ...string) *LeakGuard {
@@ -57,11 +67,8 @@ func (g *LeakGuard) Check(text string) (string, bool) {
 	if g == nil {
 		return "", false
 	}
-	// Prompt echoing is always a leak.
-	for _, marker := range []string{"【你的秘密", "【可见信息】", "【你的角色本】", "【公开发言记录】"} {
-		if strings.Contains(text, marker) {
-			return marker, true
-		}
+	if marker, echoed := promptEcho(text); echoed {
+		return marker, true
 	}
 	cand := []rune(oneLine(text))
 	for _, f := range g.forbidden {

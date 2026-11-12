@@ -595,6 +595,10 @@ func (s *Server) handleStartRoom(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, errors.New("剧本未发布"))
 		return
 	}
+	if rc.game.Status != domain.RoomLobby {
+		fail(w, http.StatusConflict, errors.New("对局已经开始或已结束，不能重复开始"))
+		return
+	}
 	// Ready is a promise, not decoration: as soon as one player has ticked it,
 	// every other human player must have too. A table where nobody uses the
 	// button (scripted clients, a quick game between friends) still starts —

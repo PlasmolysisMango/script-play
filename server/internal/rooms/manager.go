@@ -239,6 +239,13 @@ func (m *Manager) Start(room *domain.Room, rec *domain.ScriptRecord) (*engine.Ac
 	if err != nil {
 		return nil, err
 	}
+	// A start request can arrive twice (a retried click, a reconnecting host).
+	// Once the first actor is released the room is no longer guarded by
+	// m.actors, and restarting a finished game re-ran its final phase and left
+	// the room "running" for the idle timeout (K28 持斧奥夫).
+	if g.Status != domain.RoomLobby {
+		return nil, errors.New("对局已经开始或已结束，不能重复开始")
+	}
 	if rec == nil || rec.Body == nil {
 		return nil, errors.New("剧本未发布或内容为空")
 	}

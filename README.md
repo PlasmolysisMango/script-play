@@ -162,7 +162,7 @@ cd server && go run ./cmd/scriptcheck ../scripts/K11-再见苏西/script.json
 | `roles[]` | `id`、`name`、`personaId`—、`public{intro,appearance}`—、`private{script,secrets[],goals[],knownFactIds[]}` |
 | `clues[]` | `id`、`title`、`content`（Markdown）、`location`—、`back`—（卡背，搜证选项只露这一行）、`ownerRoleId`—、`subjectRoleId`—、`mustReveal`—、`isPublic`—、`grantsItem`—、`requiresItems`—、`unlockedBy`—、`keywords`—、`imageUrl`—、`links{roles,secrets,facts}`— |
 | `facts[]` | `id`、`text` |
-| `truth` | `killerRoleId`、`method`—、`motive`—、`timeline[]`—、`summary`—（复盘全文，Markdown） |
+| `truth` | `killerRoleId`、`killerRoleIds[]`—（多凶手）、`killerKind`—（`seat`/`npc`/`multiple`）、`killerName`—（NPC 真凶姓名）、`method`—、`motive`—、`timeline[]`—、`summary`—（复盘全文，Markdown） |
 
 `public.intro` 是开局所有人可见的一句话，`private.script` 是该角色的完整角色本（Markdown），
 `truth` 永远不进任何角色的 prompt，只在主持人与复盘里出现。
@@ -191,7 +191,7 @@ cd server && go run ./cmd/scriptcheck ../scripts/K11-再见苏西/script.json
 | `requiresItems` 不能有空串 | `clues[i].requiresItems` |
 | 写了 `keywords` 就必须有 `ownerRoleId`（关键词只用来开私人物品／记忆碎片） | `clues[i].keywords` |
 | 事实 id 非空 | `facts[i].id` |
-| 凶手角色必须存在（可留空，但复盘会说不出凶手） | `truth.killerRoleId` |
+| 凶手角色必须存在（可留空，但复盘会说不出凶手）；NPC 真凶填 `killerKind=npc` + `killerName` | `truth.killerRoleId` / `truth.killerKind` / `truth.killerName` |
 | 至少一个阶段，阶段 id 非空、类型合法 | `phases` / `phases[i].id` / `.type` |
 | **第一个阶段必须是 `reading`** | `phases[0].type` |
 | **必须有一个 `reveal` 阶段** | `phases` |

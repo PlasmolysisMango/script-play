@@ -311,7 +311,7 @@ export function GamePage({ code }: { code: string }) {
           lines={lines}
           selfSeatId={seatId}
           onReply={isSpectator ? undefined : (id) => setReplyTo(id === replyTo ? '' : id)}
-          onAdvance={isHost && state.status === 'running' ? () => send({ type: 'host.skip' }) : undefined}
+          onAdvance={isHost && state.status === 'running' ? () => send({ type: 'host.skip', phaseId: state.visible.phase.id }) : undefined}
         />
 
         {state.status === 'finished' ? (
@@ -932,7 +932,7 @@ function PhaseActions({
           点右上角「阅读剧本」读完自己的角色本，读完由主持人推进。
         </p>
         {isHost ? (
-          <button type="button" className="btn-primary text-xs" onClick={() => send({ type: 'host.skip' })}>
+          <button type="button" className="btn-primary text-xs" onClick={() => send({ type: 'host.skip', phaseId: phase.id })}>
             进入下一阶段
           </button>
         ) : null}
@@ -947,7 +947,7 @@ function PhaseActions({
       <div className="space-y-2">
         <p className="text-xs text-slate-500">开场互动中：可以自由发言；主持人准备好后进入下一阶段。</p>
         {isHost ? (
-          <button type="button" className="btn-primary text-xs" onClick={() => send({ type: 'host.skip' })}>
+          <button type="button" className="btn-primary text-xs" onClick={() => send({ type: 'host.skip', phaseId: phase.id })}>
             进入下一阶段
           </button>
         ) : null}

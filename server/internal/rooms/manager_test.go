@@ -31,7 +31,11 @@ func TestFinishedGameFreesItsSlot(t *testing.T) {
 		Roles:         []domain.Role{{ID: "r1", Name: "甲"}, {ID: "r2", Name: "乙"}},
 		Phases: []domain.Phase{
 			{ID: "p1", Type: domain.PhaseReading, Name: "阅读剧本"},
-			{ID: "p2", Type: domain.PhaseReveal, Name: "复盘"},
+			// A discussion round keeps the first game live long enough for the
+			// capacity check below; an all-auto script can finish between the
+			// two calls and make this test timing-dependent.
+			{ID: "p2", Type: domain.PhaseDiscussion, Name: "讨论", SpeechPerPlayer: 1, Order: domain.OrderRoundRobin},
+			{ID: "p3", Type: domain.PhaseReveal, Name: "复盘"},
 		},
 	}
 	rec := &domain.ScriptRecord{ID: "script_test", Status: "published", Body: sc}
@@ -80,6 +84,74 @@ func TestFinishedGameFreesItsSlot(t *testing.T) {
 	second, _ := startGame(t, mgr, st, rec.ID, "room_second")
 	if second == nil {
 		t.Fatal("second game did not start after the slot was freed")
+	}
+}
+
+// A start request that arrives after the game ended must not restart the
+// table: the retried click used to create a fresh actor on the finished game,
+// re-run its last phase and leave the room "running" until the idle reaper
+// (K28 持斧奥夫).
+func TestFinishedGameCannotBeStartedAgain(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(dir)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	rec := &domain.ScriptRecord{ID: "script_restart", Status: "published", Body: &domain.Script{
+		SchemaVersion: 1,
+		Meta:          domain.Meta{Title: "重启测试本", PlayerCount: domain.CountRange{Min: 2, Max: 2}},
+		Roles:         []domain.Role{{ID: "r1", Name: "甲"}, {ID: "r2", Name: "乙"}},
+		Phases: []domain.Phase{
+			{ID: "p1", Type: domain.PhaseReading, Name: "阅读剧本"},
+			{ID: "p2", Type: domain.PhaseReveal, Name: "复盘"},
+		},
+	}}
+	st.PutScript(rec)
+
+	cfg := &config.Config{Limits: config.Limits{
+		MaxRooms:     4,
+		FloorTimeout: time.Second,
+		AgentTimeout: 2 * time.Second,
+		AutoAdvance:  true,
+	}}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	reg := llm.NewRegistry("mock", 1)
+	reg.Register(llm.NewMock())
+	mgr := rooms.NewManager(ctx, st, realtime.NewHub(), reg, cfg)
+	t.Cleanup(mgr.Close)
+
+	room, g := startGame(t, mgr, st, rec.ID, "room_restart")
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, live := mgr.Actor(room.ID); !live {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	stored, err := st.GetGame(g.ID)
+	if err != nil {
+		t.Fatalf("get game: %v", err)
+	}
+	if stored.Status != domain.RoomFinished {
+		t.Fatalf("game status = %q, want finished", stored.Status)
+	}
+	before := len(stored.Events)
+
+	if _, err := mgr.Start(room, rec); err == nil {
+		t.Fatal("a finished game accepted a second start")
+	}
+	stored, err = st.GetGame(g.ID)
+	if err != nil {
+		t.Fatalf("get game: %v", err)
+	}
+	if stored.Status != domain.RoomFinished {
+		t.Fatalf("restart flipped the game to %q", stored.Status)
+	}
+	if len(stored.Events) != before {
+		t.Fatalf("restart appended %d events to the finished game", len(stored.Events)-before)
 	}
 }
 

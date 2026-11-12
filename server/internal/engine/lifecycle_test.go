@@ -190,3 +190,87 @@ func TestSilentDiscussionAdvancesByItself(t *testing.T) {
 		t.Fatal("the idle discussion ended without saying why")
 	}
 }
+
+// A host advance click belongs to the phase it was issued in. A queued click
+// that lands just after the table moved on must not skip the next round's
+// opening beat (the E2E runs saw 4–433ms search/vote phases from this race).
+func TestStaleHostSkipDoesNotAdvanceTheNextPhase(t *testing.T) {
+	sc := fixtureScript()
+	sc.Phases = []domain.Phase{
+		{ID: "p1", Type: domain.PhaseOpening, Name: "开场"},
+		{ID: "p2", Type: domain.PhaseDiscussion, Name: "讨论", SpeechPerPlayer: 1, Order: domain.OrderRoundRobin},
+		{ID: "p3", Type: domain.PhaseOpening, Name: "收场"},
+	}
+	a := humanTable(t, sc, ActorConfig{FloorTimeout: 5 * time.Second, AgentTimeout: time.Second})
+	waitFor(t, 5*time.Second, func() bool {
+		st, ok := a.StateForSeat("seat1")
+		return ok && st.Visible.Phase.ID == "p1"
+	})
+	mustHandle(t, a, "seat1", ClientMessage{Type: "host.skip", PhaseID: "p1"})
+	waitFor(t, 5*time.Second, func() bool {
+		st, ok := a.StateForSeat("seat1")
+		return ok && st.Visible.Phase.ID == "p2"
+	})
+
+	// The same click arrives late: it must be ignored, not spend p2.
+	mustHandle(t, a, "seat1", ClientMessage{Type: "host.skip", PhaseID: "p1"})
+	time.Sleep(150 * time.Millisecond)
+	if st, ok := a.StateForSeat("seat1"); !ok || st.Visible.Phase.ID != "p2" {
+		t.Fatalf("a stale skip advanced the table to %q", st.Visible.Phase.ID)
+	}
+
+	// A click without a phase id keeps the old behaviour for older clients.
+	mustHandle(t, a, "seat1", ClientMessage{Type: "host.skip"})
+	waitFor(t, 5*time.Second, func() bool {
+		st, ok := a.StateForSeat("seat1")
+		return ok && st.Visible.Phase.ID == "p3"
+	})
+}
+
+// Every speech line is pinned to the phase it was said in, so a replay can
+// attribute it without inferring from neighbouring phase events.
+func TestSpeechEventsCarryTheirPhaseID(t *testing.T) {
+	sc := fixtureScript()
+	sc.Phases = []domain.Phase{
+		{ID: "p1", Type: domain.PhaseDiscussion, Name: "公聊", SpeechPerPlayer: 1, Order: domain.OrderRoundRobin},
+	}
+	a := humanTable(t, sc, ActorConfig{FloorTimeout: 5 * time.Second, AgentTimeout: time.Second})
+	waitFor(t, 5*time.Second, func() bool { return hasSystemEvent(a.Snapshot(), "seat1", "轮到你发言") })
+	mustHandle(t, a, "seat1", ClientMessage{Type: "speak.text", Text: "我先说一句。"})
+	waitFor(t, 5*time.Second, func() bool {
+		for _, ev := range a.Snapshot().Events {
+			if ev.Type == domain.EvSpeech && strings.Contains(ev.Text, "我先说一句") {
+				return ev.PhaseID == "p1"
+			}
+		}
+		return false
+	})
+}
+
+// An NPC killer is not a playable role; the reveal must name it instead of
+// announcing "凶手是" with nothing after it (K18 阿飞).
+func TestRevealNamesAnNPCKiller(t *testing.T) {
+	sc := fixtureScript()
+	sc.Truth = domain.Truth{
+		KillerKind: domain.KillerKindNPC,
+		KillerName: "阿飞",
+		Summary:    "阿飞把毒药投进了张叔的杯子。",
+	}
+	sc.Phases = []domain.Phase{{ID: "p1", Type: domain.PhaseReveal, Name: "复盘"}}
+	a := humanTable(t, sc, ActorConfig{FloorTimeout: 5 * time.Second, AgentTimeout: time.Second})
+
+	waitFor(t, 5*time.Second, func() bool {
+		for _, ev := range a.Snapshot().Events {
+			if ev.Type == domain.EvReveal {
+				if ev.PhaseID != "p1" || !strings.Contains(ev.Text, "阿飞") {
+					t.Fatalf("reveal = %q (phase %q)", ev.Text, ev.PhaseID)
+				}
+				if ev.Meta["killerKind"] != domain.KillerKindNPC || ev.Meta["killerName"] != "阿飞" {
+					t.Fatalf("reveal meta = %v", ev.Meta)
+				}
+				return true
+			}
+		}
+		return false
+	})
+}

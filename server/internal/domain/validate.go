@@ -156,6 +156,31 @@ func (s *Script) Validate() []ValidationError {
 			add("truth.killerRoleIds", "凶手角色不存在：%s", rid)
 		}
 	}
+	// The kind decides how the reveal and the replay read the truth. An
+	// unknown value or a kind that contradicts its role list would only be
+	// noticed after the table has played, so reject it at import time.
+	switch kind := s.Truth.KillerKind; kind {
+	case "", KillerKindSeat, KillerKindNPC, KillerKindMultiple:
+	default:
+		add("truth.killerKind", "未知真凶类型：%s（可选 seat / npc / multiple）", kind)
+	}
+	switch s.Truth.ResolvedKillerKind() {
+	case KillerKindNPC:
+		if strings.TrimSpace(s.Truth.KillerName) == "" {
+			add("truth.killerName", "NPC 真凶必须填写姓名")
+		}
+		if len(s.Truth.Killers()) > 0 {
+			add("truth.killerKind", "NPC 真凶不应同时填写凶手角色")
+		}
+	case KillerKindMultiple:
+		if len(s.Truth.Killers()) < 2 {
+			add("truth.killerKind", "multiple 至少需要两名凶手角色")
+		}
+	case KillerKindSeat:
+		if len(s.Truth.Killers()) != 1 {
+			add("truth.killerKind", "seat 需要且只需要一名凶手角色")
+		}
+	}
 
 	// Card-game scripts carry a deck instead of a clue pool. The checks below
 	// are about the deck only: every id unique, every kind known, every skill

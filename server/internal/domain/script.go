@@ -5,7 +5,10 @@
 // this package but is only reachable through engine.VisibleFor.
 package domain
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // Phase types supported by the state machine.
 const (
@@ -114,10 +117,18 @@ type Truth struct {
 	// single killerRoleId forced the reveal to announce the wrong person). The
 	// singular field above stays the common case and is always included.
 	KillerRoleIDs []string `json:"killerRoleIds,omitempty"`
-	Method        string   `json:"method,omitempty"`
-	Motive        string   `json:"motive,omitempty"`
-	Timeline      []string `json:"timeline,omitempty"`
-	Summary       string   `json:"summary,omitempty"`
+	// KillerKind says how the guilty party sits at the table: "seat" (a played
+	// role), "npc" (named in the script but not playable, e.g. K18 阿飞) or
+	// "multiple" (more than one guilty role). Empty means it is inferred from
+	// the role ids.
+	KillerKind string `json:"killerKind,omitempty"`
+	// KillerName is the NPC's name when KillerKind is "npc". It never reaches a
+	// seat prompt and is only used by the reveal and the host replay.
+	KillerName string   `json:"killerName,omitempty"`
+	Method     string   `json:"method,omitempty"`
+	Motive     string   `json:"motive,omitempty"`
+	Timeline   []string `json:"timeline,omitempty"`
+	Summary    string   `json:"summary,omitempty"`
 }
 
 // Killers returns every guilty role, in declaration order and without repeats.
@@ -139,6 +150,33 @@ func (t Truth) Killers() []string {
 		add(id)
 	}
 	return out
+}
+
+// Killer kinds. A script may leave KillerKind empty; ResolvedKillerKind then
+// infers it from the role list and KillerName.
+const (
+	KillerKindSeat     = "seat"
+	KillerKindNPC      = "npc"
+	KillerKindMultiple = "multiple"
+)
+
+// ResolvedKillerKind returns the declared kind, or the obvious one when the
+// script did not say: several role ids means multiple, one means a seat, and
+// no role ids with a KillerName means an NPC.
+func (t Truth) ResolvedKillerKind() string {
+	if t.KillerKind != "" {
+		return t.KillerKind
+	}
+	switch n := len(t.Killers()); {
+	case n > 1:
+		return KillerKindMultiple
+	case n == 1:
+		return KillerKindSeat
+	case strings.TrimSpace(t.KillerName) != "":
+		return KillerKindNPC
+	default:
+		return ""
+	}
 }
 
 // Phase is one step of the game flow.

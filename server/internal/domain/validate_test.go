@@ -107,3 +107,40 @@ func TestValidateAcceptsPublicSearchPhase(t *testing.T) {
 		t.Fatalf("unexpected validation errors: %v", errs)
 	}
 }
+
+// The truth may describe an NPC or several guilty roles; a kind that
+// contradicts its role list must fail at import time, not at the reveal.
+func TestValidateKillerKind(t *testing.T) {
+	cases := []struct {
+		name   string
+		truth  domain.Truth
+		wantOK bool
+		path   string
+	}{
+		{"seat is the default", domain.Truth{KillerRoleID: "r1"}, true, ""},
+		{"npc without a name", domain.Truth{KillerKind: domain.KillerKindNPC}, false, "truth.killerName"},
+		{"npc with a name", domain.Truth{KillerKind: domain.KillerKindNPC, KillerName: "阿飞"}, true, ""},
+		{"npc must not name a role", domain.Truth{KillerKind: domain.KillerKindNPC, KillerRoleID: "r1", KillerName: "阿飞"}, false, "truth.killerKind"},
+		{"multiple needs two roles", domain.Truth{KillerKind: domain.KillerKindMultiple, KillerRoleID: "r1"}, false, "truth.killerKind"},
+		{"multiple roles", domain.Truth{KillerKind: domain.KillerKindMultiple, KillerRoleIDs: []string{"r1", "r2"}}, true, ""},
+		{"unknown kind", domain.Truth{KillerKind: "ghost", KillerRoleID: "r1"}, false, "truth.killerKind"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sc := baseScript()
+			sc.Truth = tc.truth
+			errs := sc.Validate()
+			if tc.wantOK {
+				for _, e := range errs {
+					if e.Path == "truth.killerKind" || e.Path == "truth.killerName" {
+						t.Fatalf("unexpected %v", e)
+					}
+				}
+				return
+			}
+			if !hasPath(errs, tc.path) {
+				t.Fatalf("errors = %v, want path %s", errs, tc.path)
+			}
+		})
+	}
+}

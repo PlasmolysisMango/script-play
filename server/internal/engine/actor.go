@@ -571,7 +571,7 @@ func (a *Actor) Handle(ctx context.Context, seatID string, msg ClientMessage) er
 		if !seat.IsHost {
 			return ErrNotAllowed{Reason: "只有主持人可以跳过"}
 		}
-		return a.requestAdvance(ctx)
+		return a.requestAdvance(ctx, msg.PhaseID)
 	case "host.end":
 		// The host's way out of a table that cannot reach its own ending — a
 		// play/score script with no reveal phase used to stay running (and hold
@@ -772,6 +772,13 @@ func (a *Actor) sideCommand(seat domain.Seat, msg ClientMessage) bool {
 
 func (a *Actor) beginPhase(ctx context.Context) {
 	a.mu.Lock()
+	// A queued phase start must never wake a table that already ended: a
+	// late call here used to re-run the final phase of a finished game
+	// (K28 持斧奥夫), leaving the room "running" until the idle reaper.
+	if a.finished {
+		a.mu.Unlock()
+		return
+	}
 	ph := a.m.Current(a.g)
 	if ph == nil {
 		a.finishLocked("剧本已结束")
@@ -917,14 +924,26 @@ func (a *Actor) advance(ctx context.Context, gen int) {
 	a.beginPhase(a.phaseCtx(ctx))
 }
 
-func (a *Actor) requestAdvance(ctx context.Context) error {
+func (a *Actor) requestAdvance(ctx context.Context, expectedPhaseID string) error {
 	a.mu.Lock()
+	if a.finished {
+		a.mu.Unlock()
+		return nil
+	}
 	gen := a.phaseGen
+	ph := a.m.Current(a.g)
+	// A click queued at the end of one phase must not spend the next round's
+	// opening beats. Clients that name the phase they saw get the stale
+	// command dropped; older clients without a phaseId keep working.
+	if expectedPhaseID != "" && (ph == nil || ph.ID != expectedPhaseID) {
+		a.mu.Unlock()
+		return nil
+	}
 	// Reading and opening keep a short floor so a host cannot skip the role
 	// book before anybody reads it. The script's timeoutSec is a suggested
 	// reading time, not a lock: honouring it here made a 900-second scene
 	// ignore the host's "next" for fifteen minutes.
-	if ph := a.m.Current(a.g); ph != nil && (ph.Type == domain.PhaseReading || ph.Type == domain.PhaseOpening) {
+	if ph != nil && (ph.Type == domain.PhaseReading || ph.Type == domain.PhaseOpening) {
 		if min := a.cfg.ReadingMin; min > 0 {
 			if left := min - time.Since(a.phaseAt); left > 0 {
 				a.mu.Unlock()
@@ -3006,11 +3025,21 @@ func (a *Actor) generate(ctx context.Context, gen int, seat domain.Seat, req llm
 	text = stripSelfPrefix(strings.TrimSpace(text), a.speakerLocked(seat))
 	// A tool call carries the spoken words inside a field. Checking the whole
 	// envelope would flag `{"tool":"speak"}` itself as a leak.
+	act := parseAction(text)
 	check := text
+	reveal := false
 	if req.JSON {
-		check = parseAction(text).Text
+		check = act.Text
+		// A reveal line describes the clue card it publishes. That card is
+		// about to be public and often mirrors the truth timeline word for
+		// word (K11 seq 218), so only the prompt-echo check applies here.
+		reveal = act.Tool == ToolReveal
 	}
-	if hit, leaked := guard.Check(check); leaked {
+	hit, leaked := guard.Check(check)
+	if reveal && leaked {
+		hit, leaked = promptEcho(check)
+	}
+	if leaked {
 		a.logLeak(seat, hit, text)
 		req.Messages = []llm.Message{{Role: "user", Text: req.Messages[0].Text +
 			"\n\n【纠正】你刚才的回答引用了你不该知道的细节。请只使用【可见信息】重新说一次，不要涉及任何你不知道的内容，也不要提到“秘密”“可见信息”等词。"}}
@@ -3479,15 +3508,17 @@ func (a *Actor) runReveal() {
 		summary = a.sc.Truth.Method
 	}
 	// 空 killerRoleId 表示真凶不是在场玩家（K18 的食堂帮工阿飞）。此时真相
-	// 只能由 summary 交代，不能再拼一句「凶手是 」。
+	// 只能由 summary 交代，不能再拼一句「凶手是 」；脚本若显式给出
+	// killerName，则把它当成 NPC 真凶点名。
 	text := "真相揭晓：" + summary
-	if len(killers) == 1 {
+	switch {
+	case len(killers) == 1:
 		killerName := killers[0]
 		if r := idx.RoleByID(killers[0]); r != nil {
 			killerName = r.Name
 		}
 		text = fmt.Sprintf("真相揭晓：凶手是 %s。%s", killerName, summary)
-	} else if len(killers) > 1 {
+	case len(killers) > 1:
 		// 多案本（K27 女帝攻略的三桩命案各有一个真凶）：只念一个人的名字会让
 		// 投对了另一案的玩家以为自己错了。
 		names := make([]string, 0, len(killers))
@@ -3499,16 +3530,29 @@ func (a *Actor) runReveal() {
 			names = append(names, name)
 		}
 		text = fmt.Sprintf("真相揭晓：本案共有 %d 名凶手——%s。%s", len(names), strings.Join(names, "、"), summary)
+	case strings.TrimSpace(a.sc.Truth.KillerName) != "":
+		text = fmt.Sprintf("真相揭晓：凶手是 %s（未在座）。%s", strings.TrimSpace(a.sc.Truth.KillerName), summary)
 	}
 	meta := map[string]string{}
 	if len(killers) > 0 {
 		meta["killerRoleId"] = killers[0]
 		meta["killerRoleIds"] = strings.Join(killers, ",")
 	}
+	if kind := a.sc.Truth.ResolvedKillerKind(); kind != "" {
+		meta["killerKind"] = kind
+	}
+	if name := strings.TrimSpace(a.sc.Truth.KillerName); name != "" {
+		meta["killerName"] = name
+	}
+	phaseID := ""
+	if ph := a.m.Current(a.g); ph != nil {
+		phaseID = ph.ID
+	}
 	a.appendLocked(domain.Event{
-		Type: domain.EvReveal,
-		Text: text,
-		Meta: meta,
+		Type:    domain.EvReveal,
+		PhaseID: phaseID,
+		Text:    text,
+		Meta:    meta,
 	})
 	a.persistLocked()
 }
@@ -3524,8 +3568,13 @@ func (a *Actor) appendSpeech(seat domain.Seat, text string) {
 // decline), and the other agents decide whether they want to jump in.
 func (a *Actor) appendSpeechTo(seat domain.Seat, text, replyTo string) {
 	a.mu.Lock()
+	phaseID := ""
+	if ph := a.m.Current(a.g); ph != nil {
+		phaseID = ph.ID
+	}
 	ev := domain.Event{
 		Type:    domain.EvSpeech,
+		PhaseID: phaseID,
 		SeatID:  seat.ID,
 		RoleID:  seat.RoleID,
 		Speaker: a.speakerLocked(seat),

@@ -45,12 +45,15 @@ export function ReplayPage({ code }: { code: string }) {
   }, [data])
 
   // 多案剧本会给出多个凶手：先列 killerRoleIds，没写就退回主案那一位。
+  // NPC 真凶不在座，用 truth.killerName 点名。
   const killers = useMemo(() => {
     if (!data) return []
     const ids = data.truth.killerRoleIds.length > 0 ? data.truth.killerRoleIds : [data.truth.killerRoleId]
-    return ids
+    const names = ids
       .filter((id) => id)
       .map((id) => roleNames[id] ?? data.game.seats.find((s) => s.roleId === id)?.roleName ?? id)
+    if (names.length === 0 && data.truth.killerName) names.push(`${data.truth.killerName}（NPC）`)
+    return names
   }, [data, roleNames])
 
   // Event logs carry seat ids; the replay should read as names, not ids.
