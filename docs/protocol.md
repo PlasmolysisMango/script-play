@@ -213,7 +213,7 @@ Content-Type: application/json
 { "type": "clue.reveal", "clueId": "c1" }
 { "type": "whisper.send", "to": "seat_b", "text": "钳子是我拿的" }  // 私聊，只在讨论段可用
 { "type": "vote.cast", "roleId": "r3" }
-{ "type": "order.set", "seatIds": ["seat_a", "seat_b"] }  // 主持人定序：必须是本阶段可行动角色的一个排列
+{ "type": "order.set", "seatIds": ["seat_a", "seat_b"] }  // 定序：必须是本阶段可行动角色的一个排列（主持人或 order=role_assigned 指定的角色）
 { "type": "host.skip" }   // 进入下一阶段（帧名保留旧名）：UI 写「进入下一阶段：X」，落盘一条主持人的 dm
 { "type": "ping" }
 ```
@@ -267,6 +267,8 @@ Content-Type: application/json
   自己的写在 `SeatState.points`，`SeatState.pointsLabel` 是它的名字。没有点数的本子这三个字段为空。
 - `search.pass` 只在轮到自己搜证时合法：把本轮剩余次数作废放回顺序末尾，**不扣点数**（K6 千秋的「结束本轮」）。
   座位不在搜证名单、额度已用完时客户端不会拿到按钮。
+- 阶段写 `order: "role_assigned"` 时，定序面板发给 `phase.orderRoleId` 对应的玩家座位，而不是房间主持人；
+  该角色不在座时退回主持人。
 - 阶段写 `order: "fixed"` 时顺序完全照 `phase.orderRoleIds` 走，不洗牌也不等主持人；
   写进名单的座位若不在房间里属于剧本错误，校验闸门会拒。
 - `role.skill` 是一局一次的特殊技能，`skill.use` 在**任意搜证阶段**都能发（不必轮到自己，也不占回合），

@@ -33,6 +33,10 @@ const (
 	// OrderHostAssigned leaves the order to the host, who lays out the whole
 	// round on one screen before anybody acts.
 	OrderHostAssigned = "host_assigned"
+	// OrderRoleAssigned hands that same screen to one player instead of the host
+	// (K7「本轮由船长指定大家的搜证顺序」), so an in-fiction authority is not
+	// mistaken for the room moderator.
+	OrderRoleAssigned = "role_assigned"
 	// OrderFixed follows the printed running order. K6 lists it in the rules
 	// (涌江 → 北照君 → 流兮 → 失忆少年 → 千秋), so Phase.OrderRoleIDs carries it and
 	// nobody has to retype the sequence at the table.
@@ -232,7 +236,10 @@ type Phase struct {
 	// turn hands out clues (pick or random). Vote ignores both.
 	Order      string `json:"order,omitempty"`
 	SearchMode string `json:"searchMode,omitempty"`
-	TimeoutSec int    `json:"timeoutSec,omitempty"`
+	// OrderRoleID is the role that lays out the order under OrderRoleAssigned.
+	// If that role is not seated the host takes the panel instead of stalling.
+	OrderRoleID string `json:"orderRoleId,omitempty"`
+	TimeoutSec  int    `json:"timeoutSec,omitempty"`
 	// OnlyRoleIDs narrows a phase to some of the roles. K5's 「查理的记忆」 is
 	// dealt by the cat alone, and its three search rounds are the printed
 	// "每位巫师抽 N 张" — the cat never searches. Without it the other seats

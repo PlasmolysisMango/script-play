@@ -365,9 +365,18 @@ func (s *Script) Validate() []ValidationError {
 			add(p+".speechPerPlayer", "讨论阶段每人发言次数必须大于 0")
 		}
 		switch ph.Order {
-		case "", OrderRoundRobin, OrderRandom, OrderHostAssigned, OrderFixed, OrderFavor:
+		case "", OrderRoundRobin, OrderRandom, OrderHostAssigned, OrderRoleAssigned, OrderFixed, OrderFavor:
 		default:
-			add(p+".order", "未知行动顺序策略：%s（可选 round_robin / random / host_assigned / fixed / favor）", ph.Order)
+			add(p+".order", "未知行动顺序策略：%s（可选 round_robin / random / host_assigned / role_assigned / fixed / favor）", ph.Order)
+		}
+		if ph.Order == OrderRoleAssigned && ph.OrderRoleID == "" {
+			add(p+".orderRoleId", "order=role_assigned 必须指定由哪个角色定序")
+		}
+		if ph.OrderRoleID != "" && ph.Order != OrderRoleAssigned {
+			add(p+".orderRoleId", "只有 order=role_assigned 才用得上 orderRoleId")
+		}
+		if ph.OrderRoleID != "" && !roleIDs[ph.OrderRoleID] {
+			add(p+".orderRoleId", "未知角色：%s", ph.OrderRoleID)
 		}
 		if ph.Penalty < 0 || ph.Reward < 0 {
 			add(p+".penalty", "投票后的加减分不能为负")

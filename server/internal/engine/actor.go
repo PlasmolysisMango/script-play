@@ -230,9 +230,12 @@ type Actor struct {
 	// pointsOpen flips once a SettleFavor phase has published the balances; until
 	// then Meta.HidePoints keeps other seats' numbers off the table.
 	pointsOpen bool
-	// awaitingOrder is true while the table waits for that layout, so the host
-	// view can show the re-ordering panel instead of an idle table.
+	// awaitingOrder is true while the table waits for that layout, so the seat
+	// holding the pen can show the re-ordering panel instead of an idle table.
 	awaitingOrder bool
+	// orderSeatID is who holds that panel: the host under host_assigned, or the
+	// named role's seat under role_assigned.
+	orderSeatID string
 	// phaseDone marks a phase whose actions are finished but which the host has
 	// not released yet: no waiter is running, the table is just waiting.
 	phaseDone bool
@@ -524,7 +527,7 @@ func (a *Actor) stateLocked(seat *domain.Seat, includeTruth bool) SeatState {
 	for _, slot := range a.talkQueue {
 		st.Queue = append(st.Queue, slot)
 	}
-	if a.awaitingOrder && seat != nil && seat.IsHost {
+	if a.awaitingOrder && seat != nil && seat.ID == a.orderSeatID {
 		st.Prompt = a.orderPromptLocked()
 	}
 	if a.g.Cards != nil && len(a.g.Cards.Order) > 0 {
@@ -914,6 +917,7 @@ func (a *Actor) advance(ctx context.Context, gen int) {
 	a.order = nil
 	a.orderPos = 0
 	a.awaitingOrder = false
+	a.orderSeatID = ""
 	a.resetTalkLocked()
 	a.cancelWaiterLocked()
 	if done || ph == nil {
@@ -1002,14 +1006,15 @@ func (a *Actor) finishLocked(reason string) {
 // prepareOrder fixes this phase's turn order before anyone acts.
 //
 // round_robin and random resolve it on the spot (random is logged, so a replay
-// still reads in the order that was actually played). host_assigned parks the
-// phase until the host publishes a layout: the table would otherwise have no
-// way to know who is first.
+// still reads in the order that was actually played). host_assigned and
+// role_assigned park the phase until the moderator or the named role publishes
+// a layout: the table would otherwise have no way to know who is first.
 func (a *Actor) prepareOrder(ctx context.Context, gen int, ph *domain.Phase) bool {
 	a.mu.Lock()
 	a.order = nil
 	a.orderPos = 0
 	a.awaitingOrder = false
+	a.orderSeatID = ""
 	seats := NewScheduler(a.g.Seats).Order()
 	if len(ph.OnlyRoleIDs) > 0 {
 		// A phase dealt to a subset keeps the seating order but drops everyone
@@ -1025,7 +1030,7 @@ func (a *Actor) prepareOrder(ctx context.Context, gen int, ph *domain.Phase) boo
 	a.mu.Unlock()
 
 	switch ph.Order {
-	case domain.OrderHostAssigned:
+	case domain.OrderHostAssigned, domain.OrderRoleAssigned:
 		return a.awaitOrder(ctx, gen, ph)
 	case domain.OrderFixed:
 		// 剧本把顺序印死了（K6 三轮搜证各一行名字），直接照着排，不需要主持人
@@ -1074,16 +1079,16 @@ func (a *Actor) prepareOrder(ctx context.Context, gen int, ph *domain.Phase) boo
 	}
 }
 
-// awaitOrder waits for the host to lay out the whole round. It returns false
-// when the host skipped the phase instead of ordering it.
+// awaitOrder waits for the seat in charge to lay out the whole round. It
+// returns false when that seat (or the host) skipped the phase instead.
 func (a *Actor) awaitOrder(ctx context.Context, gen int, ph *domain.Phase) bool {
 	a.mu.Lock()
 	if gen != a.phaseGen {
 		a.mu.Unlock()
 		return false
 	}
-	host := a.hostSeatLocked()
-	if host == nil {
+	assignee := a.orderAssigneeLocked(ph)
+	if assignee == nil {
 		// A room without a host seat has nobody to order the round: fall back to
 		// seating order rather than stalling forever.
 		a.order = NewScheduler(a.g.Seats).Order()
@@ -1102,17 +1107,24 @@ func (a *Actor) awaitOrder(ctx context.Context, gen int, ph *domain.Phase) bool 
 		return true
 	}
 	ch := make(chan ClientMessage, 1)
-	a.waiters[host.ID] = ch
+	a.waiters[assignee.ID] = ch
 	a.awaitingOrder = true
+	a.orderSeatID = assignee.ID
 	// The layout has no deadline of its own, so the phase needs a wake-up path:
 	// cancelWaiterLocked fires this when the host skips the phase.
 	wctx, stopWait := context.WithCancel(ctx)
 	defer stopWait()
 	a.waitCancel = stopWait
+	vis := domain.VisDM
+	if !assignee.IsHost {
+		// A player holding the pen needs the prompt in their own view; DM
+		// visibility would hide it from the very seat that must answer.
+		vis = SeatVisibility(assignee.ID)
+	}
 	a.appendLocked(domain.Event{
 		Type:       domain.EvSystem,
-		SeatID:     host.ID,
-		Visibility: domain.VisDM,
+		SeatID:     assignee.ID,
+		Visibility: vis,
 		PhaseID:    ph.ID,
 		Text:       fmt.Sprintf("本阶段顺序由你指定：把 %d 位可以行动的角色排好顺序后点「确定顺序」。", len(a.phasePlayersLocked(ph))),
 	})
@@ -1121,10 +1133,11 @@ func (a *Actor) awaitOrder(ctx context.Context, gen int, ph *domain.Phase) bool 
 
 	defer func() {
 		a.mu.Lock()
-		if cur, ok := a.waiters[host.ID]; ok && cur == ch {
-			delete(a.waiters, host.ID)
+		if cur, ok := a.waiters[assignee.ID]; ok && cur == ch {
+			delete(a.waiters, assignee.ID)
 		}
 		a.awaitingOrder = false
+		a.orderSeatID = ""
 		a.mu.Unlock()
 	}()
 
@@ -1138,25 +1151,40 @@ func (a *Actor) awaitOrder(ctx context.Context, gen int, ph *domain.Phase) bool 
 				return false
 			case "order.set":
 				if err := a.applyOrder(ph, msg.SeatIDs); err != nil {
-					a.notify(*host, err.Error())
+					a.notify(*assignee, err.Error())
 					continue
 				}
 				return true
 			default:
 				if msg.Type == "speak.text" {
 					if text := strings.TrimSpace(msg.Text); text != "" {
-						a.appendSpeech(*host, text)
+						a.appendSpeech(*assignee, text)
 					}
 					continue
 				}
-				a.sideCommand(*host, msg)
+				a.sideCommand(*assignee, msg)
 			}
 		}
 	}
 }
 
-// applyOrder stores the host's layout after checking it is a full permutation
-// of the player seats: a short list would strand a seat with no turn at all.
+// orderAssigneeLocked is who lays out the phase order. host_assigned gives the
+// panel to the moderator; role_assigned gives it to the named role's player
+// (K7 船长). An unseated role falls back to the host so the phase never stalls.
+func (a *Actor) orderAssigneeLocked(ph *domain.Phase) *domain.Seat {
+	if ph.Order == domain.OrderRoleAssigned && ph.OrderRoleID != "" {
+		for i := range a.g.Seats {
+			s := &a.g.Seats[i]
+			if s.RoleID == ph.OrderRoleID && s.Kind != domain.SeatSpectator {
+				return s
+			}
+		}
+	}
+	return a.hostSeatLocked()
+}
+
+// applyOrder stores the layout after checking it is a full permutation of the
+// player seats: a short list would strand a seat with no turn at all.
 func (a *Actor) applyOrder(ph *domain.Phase, ids []string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -1189,7 +1217,13 @@ func (a *Actor) applyOrder(ph *domain.Phase, ids []string) error {
 	}
 	a.order = order
 	a.orderPos = 0
-	a.appendLocked(domain.Event{Type: domain.EvSystem, PhaseID: ph.ID, Text: "本阶段顺序（主持人指定）：" + a.orderNamesLocked(order)})
+	who := "主持人指定"
+	if ph.Order == domain.OrderRoleAssigned && a.orderSeatID != "" {
+		if s := a.g.SeatByID(a.orderSeatID); s != nil && !s.IsHost {
+			who = a.roleNameLocked(ph.OrderRoleID) + "指定"
+		}
+	}
+	a.appendLocked(domain.Event{Type: domain.EvSystem, PhaseID: ph.ID, Text: "本阶段顺序（" + who + "）：" + a.orderNamesLocked(order)})
 	a.persistLocked()
 	return nil
 }
@@ -1216,7 +1250,8 @@ func (a *Actor) nextSeat(counts map[string]int, limit int) *domain.Seat {
 	return nil
 }
 
-// orderPromptLocked is the host-side panel: every player once, in any order.
+// orderPromptLocked is the ordering panel: every player once, in any order.
+// It goes to the seat holding the pen, which may be a player (role_assigned).
 func (a *Actor) orderPromptLocked() *TurnPrompt {
 	p := &TurnPrompt{Kind: "order"}
 	if ph := a.m.Current(a.g); ph != nil {

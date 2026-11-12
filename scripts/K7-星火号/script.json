@@ -678,7 +678,8 @@
       "name": "第二步·第一轮搜证：瀚海远征",
       "round": 1,
       "perPlayerPick": 4,
-      "order": "host_assigned",
+      "order": "role_assigned",
+      "orderRoleId": "r_captain",
       "cluePool": [
         "c01",
         "c02",
@@ -719,7 +720,8 @@
       "name": "第四步·第二轮搜证：迷航疑云",
       "round": 2,
       "perPlayerPick": 4,
-      "order": "host_assigned",
+      "order": "role_assigned",
+      "orderRoleId": "r_captain",
       "cluePool": [
         "c21",
         "c22",
@@ -778,7 +780,7 @@
         "c54",
         "c55"
       ],
-      "dmScript": "第六步·第三轮搜证：由大家共同推举一名船员，由他来指定本轮的搜证顺序。【星火再临】已开启，每人可以随机抽取 3 条线索，依旧不能抽取自己的线索卡。"
+      "dmScript": "第六步·第三轮搜证：由大家共同推举一名船员，主持人按推举结果代他排定本轮的搜证顺序。【星火再临】已开启，每人可以随机抽取 3 条线索，依旧不能抽取自己的线索卡。"
     },
     {
       "id": "p8",

@@ -228,7 +228,7 @@ export const turnOptionSchema = z.object({
 })
 export type TurnOption = z.infer<typeof turnOptionSchema>
 
-/** What the engine is blocked on; only the host ever receives one. */
+/** What the engine is blocked on; the host or the named ordering role receives one. */
 export const turnPromptSchema = z.object({
   kind: z.string(),
   phaseId: z.string().optional().default(''),

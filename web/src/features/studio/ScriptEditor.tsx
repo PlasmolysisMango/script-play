@@ -532,13 +532,35 @@ function PhaseSection({
                       className="input text-xs"
                       value={phase.order || 'round_robin'}
                       disabled={disabled}
-                      onChange={(e) => patch(index, { order: e.target.value })}
+                      onChange={(e) => {
+                        const order = e.target.value
+                        patch(index, order === 'role_assigned' ? { order } : { order, orderRoleId: undefined })
+                      }}
                     >
                       {PHASE_ORDERS.map(([value, label]) => (
                         <option key={value} value={value}>
                           {label}
                         </option>
                       ))}
+                    </select>
+                  </Field>
+                ) : null}
+                {phase.order === 'role_assigned' && (phase.type === 'search' || phase.type === 'discussion') ? (
+                  <Field label="定序角色" hint="轮到该角色时，由这名玩家排整轮顺序">
+                    <select
+                      className="input text-xs"
+                      value={phase.orderRoleId ?? ''}
+                      disabled={disabled}
+                      onChange={(e) => patch(index, { orderRoleId: e.target.value })}
+                    >
+                      <option value="">选择角色</option>
+                      {roles
+                        .filter((r) => r.id)
+                        .map((r) => (
+                          <option key={r.id} value={r.id}>
+                            {r.name || r.id}
+                          </option>
+                        ))}
                     </select>
                   </Field>
                 ) : null}

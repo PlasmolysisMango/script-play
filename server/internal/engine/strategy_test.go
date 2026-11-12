@@ -222,3 +222,57 @@ func drawnBy(g domain.Game, seatID string) int {
 	}
 	return n
 }
+
+// Role-assigned order: the named role's player holds the panel, not the room
+// host. K7 read "本轮由船长指定搜证顺序" as the host's job and prompted a
+// moderator who was not playing the captain.
+func TestRoleAssignedOrderPromptsNamedRole(t *testing.T) {
+	sc := fixtureScript()
+	sc.Phases[1].Order = domain.OrderRoleAssigned
+	sc.Phases[1].OrderRoleID = "r2" // 陆沉
+	g := domain.NewGame("g1", "room1", "sc1", nil)
+	players := strategySeats("seat1", "seat2", "seat3")
+	for i := range players {
+		players[i].IsHost = false
+	}
+	host := domain.Seat{
+		ID:          "seat0",
+		RoomID:      "room1",
+		Kind:        domain.SeatSpectator,
+		DisplayName: "主持人",
+		Connected:   true,
+		IsHost:      true,
+		JoinedAt:    time.Now(),
+	}
+	g.Seats = append([]domain.Seat{host}, players...)
+
+	actor := NewActor(g, sc, nil, nil, nil, ActorConfig{
+		FloorTimeout: 5 * time.Second,
+		AgentTimeout: 2 * time.Second,
+		AutoAdvance:  true,
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	go actor.Start(ctx)
+
+	waitFor(t, 5*time.Second, func() bool {
+		st, ok := actor.StateForSeat("seat2")
+		return ok && st.Prompt != nil && st.Prompt.Kind == "order"
+	})
+	for _, id := range []string{"seat0", "seat1", "seat3"} {
+		st, ok := actor.StateForSeat(id)
+		if !ok {
+			t.Fatalf("%s state missing", id)
+		}
+		if st.Prompt != nil {
+			t.Fatalf("%s received the order prompt, want only the captain's seat", id)
+		}
+	}
+
+	// The named role can publish the layout even though it is not the host.
+	if err := actor.Handle(ctx, "seat2", ClientMessage{Type: "order.set", SeatIDs: []string{"seat3", "seat2", "seat1"}}); err != nil {
+		t.Fatalf("order.set: %v", err)
+	}
+	waitEvent(t, actor, "", "本阶段顺序（陆沉指定）")
+	waitEvent(t, actor, "seat3", "轮到你搜证")
+}

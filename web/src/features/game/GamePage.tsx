@@ -1027,8 +1027,9 @@ function slotLabel(slot: SpeechSlot, visible: Visible): string {
 }
 
 /**
- * Host-assigned turn order. The phase stays blocked until the host submits a
- * full permutation, so this panel sits right above the chat box.
+ * Assigned turn order. The phase stays blocked until the seat holding the pen
+ * (the host or the script's named role) submits a full permutation, so this
+ * panel sits right above the chat box.
  */
 function OrderPanel({
   prompt,
@@ -1319,6 +1320,8 @@ function orderLabel(order?: string): string {
       return '顺序随机'
     case 'host_assigned':
       return '主持人定序'
+    case 'role_assigned':
+      return '指定角色定序'
     default:
       return '按入座轮流'
   }
@@ -1331,6 +1334,8 @@ function orderSentence(order?: string): string {
       return '顺序在阶段开始时随机排定，按那个顺序发言。'
     case 'host_assigned':
       return '顺序由主持人在阶段开始时排定，按那个顺序发言。'
+    case 'role_assigned':
+      return '顺序由剧本指定的角色在阶段开始时排定，按那个顺序发言。'
     default:
       return '按入座顺序轮流发言。'
   }

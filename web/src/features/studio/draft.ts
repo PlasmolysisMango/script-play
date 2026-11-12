@@ -72,6 +72,8 @@ export type Phase = {
   speechPerPlayer?: number
   searchMode?: string
   order?: string
+  /** order=role_assigned 时由哪个角色排顺序。 */
+  orderRoleId?: string
   timeoutSec?: number
   /** 只由这些角色行动（如「查理的记忆」只有黑猫能抽）。 */
   onlyRoleIds?: string[]
@@ -162,6 +164,7 @@ export const PHASE_ORDERS = [
   ['round_robin', '轮流（按入座）'],
   ['random', '随机'],
   ['host_assigned', '主持人指定'],
+  ['role_assigned', '剧本角色指定'],
 ] as const
 
 export const SEARCH_MODES = [
@@ -182,6 +185,8 @@ export function orderHint(order?: string): string {
       return '阶段开始时随机排一次，之后按这个顺序进行'
     case 'host_assigned':
       return '阶段开始由主持人一次性排好整轮顺序'
+    case 'role_assigned':
+      return '阶段开始由指定的剧本角色一次性排好整轮顺序'
     default:
       return '按入座顺序轮流，主持人优先'
   }

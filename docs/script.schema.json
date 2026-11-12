@@ -295,11 +295,12 @@
             "round_robin",
             "random",
             "host_assigned",
+            "role_assigned",
             "fixed",
             "favor",
             ""
           ],
-          "description": "行动顺序：round_robin 按入座轮流，random 阶段开始时打乱一次，host_assigned 由主持人一次性排好整轮，fixed 照 orderRoleIds 里印死的顺序，favor 按当前行动点（恩宠值）从高到低。"
+          "description": "行动顺序：round_robin 按入座轮流，random 阶段开始时打乱一次，host_assigned 由主持人一次性排好整轮，role_assigned 由 orderRoleId 指定的角色排整轮，fixed 照 orderRoleIds 里印死的顺序，favor 按当前行动点（恩宠值）从高到低。"
         },
         "timeoutSec": {
           "type": "integer",
@@ -364,6 +365,10 @@
           "type": "integer",
           "minimum": 0,
           "description": "抽一张卡要花多少行动点（K6：1 根仙骨）。只在 meta.startPoints 非 0 时有意义。"
+        },
+        "orderRoleId": {
+          "type": "string",
+          "description": "order=role_assigned 时由哪个角色（角色 id）排整轮顺序。该角色不在座时退回主持人。"
         },
         "orderRoleIds": {
           "type": "array",
