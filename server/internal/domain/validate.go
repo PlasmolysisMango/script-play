@@ -159,28 +159,31 @@ func (s *Script) Validate() []ValidationError {
 	// The kind decides how the reveal and the replay read the truth. An
 	// unknown value or a kind that contradicts its role list would only be
 	// noticed after the table has played, so reject it at import time.
-	switch kind := s.Truth.KillerKind; kind {
-	case "", KillerKindSeat, KillerKindNPC, KillerKindMultiple:
-	default:
-		add("truth.killerKind", "未知真凶类型：%s（可选 seat / npc / multiple）", kind)
+	checkKillerShape := func(path, kind, name string, killers []string) {
+		switch kind {
+		case "", KillerKindSeat, KillerKindNPC, KillerKindMultiple:
+		default:
+			add(path+".killerKind", "未知真凶类型：%s（可选 seat / npc / multiple）", kind)
+		}
+		switch resolvedKillerKind(kind, name, len(killers)) {
+		case KillerKindNPC:
+			if strings.TrimSpace(name) == "" {
+				add(path+".killerName", "NPC 真凶必须填写姓名")
+			}
+			if len(killers) > 0 {
+				add(path+".killerKind", "NPC 真凶不应同时填写凶手角色")
+			}
+		case KillerKindMultiple:
+			if len(killers) < 2 {
+				add(path+".killerKind", "multiple 至少需要两名凶手角色")
+			}
+		case KillerKindSeat:
+			if len(killers) != 1 {
+				add(path+".killerKind", "seat 需要且只需要一名凶手角色")
+			}
+		}
 	}
-	switch s.Truth.ResolvedKillerKind() {
-	case KillerKindNPC:
-		if strings.TrimSpace(s.Truth.KillerName) == "" {
-			add("truth.killerName", "NPC 真凶必须填写姓名")
-		}
-		if len(s.Truth.Killers()) > 0 {
-			add("truth.killerKind", "NPC 真凶不应同时填写凶手角色")
-		}
-	case KillerKindMultiple:
-		if len(s.Truth.Killers()) < 2 {
-			add("truth.killerKind", "multiple 至少需要两名凶手角色")
-		}
-	case KillerKindSeat:
-		if len(s.Truth.Killers()) != 1 {
-			add("truth.killerKind", "seat 需要且只需要一名凶手角色")
-		}
-	}
+	checkKillerShape("truth", s.Truth.KillerKind, s.Truth.KillerName, s.Truth.Killers())
 
 	// Card-game scripts carry a deck instead of a clue pool. The checks below
 	// are about the deck only: every id unique, every kind known, every skill
@@ -287,10 +290,13 @@ func (s *Script) Validate() []ValidationError {
 		add("phases", "至少需要一个阶段")
 	}
 	var hasReveal bool
+	phaseByID := map[string]*Phase{}
 	for i, ph := range s.Phases {
 		p := fmt.Sprintf("phases[%d]", i)
 		if ph.ID == "" {
 			add(p+".id", "阶段 id 不能为空")
+		} else {
+			phaseByID[ph.ID] = &s.Phases[i]
 		}
 		switch ph.Type {
 		case PhaseReading, PhaseOpening, PhaseSearch, PhaseDiscussion, PhaseVote, PhaseReveal, PhasePlay, PhaseScore:
@@ -427,6 +433,46 @@ func (s *Script) Validate() []ValidationError {
 	// (discussion before search, rounds, votes) is up to the script JSON.
 	if len(s.Phases) > 0 && s.Phases[0].Type != PhaseReading {
 		add("phases[0].type", "第一个阶段必须是 reading（阅读剧本）")
+	}
+
+	// Per-case truth (multi-case scripts). A wrong phase link or a killer id
+	// typo would only surface after the whole table has played, so the same
+	// strictness as the top-level truth applies here.
+	caseIDs := map[string]bool{}
+	casePhases := map[string]bool{}
+	for i, c := range s.Truth.Cases {
+		p := fmt.Sprintf("truth.cases[%d]", i)
+		if strings.TrimSpace(c.ID) == "" {
+			add(p+".id", "案件 id 不能为空")
+		} else if caseIDs[c.ID] {
+			add(p+".id", "案件 id 重复：%s", c.ID)
+		}
+		caseIDs[c.ID] = true
+		if strings.TrimSpace(c.Name) == "" {
+			add(p+".name", "案件名称不能为空")
+		}
+		if c.KillerRoleID != "" && !roleIDs[c.KillerRoleID] {
+			add(p+".killerRoleId", "凶手角色不存在：%s", c.KillerRoleID)
+		}
+		for _, rid := range c.KillerRoleIDs {
+			if !roleIDs[rid] {
+				add(p+".killerRoleIds", "凶手角色不存在：%s", rid)
+			}
+		}
+		checkKillerShape(p, c.KillerKind, c.KillerName, c.Killers())
+		if c.PhaseID == "" {
+			continue
+		}
+		ph := phaseByID[c.PhaseID]
+		if ph == nil {
+			add(p+".phaseId", "未知阶段：%s", c.PhaseID)
+		} else if ph.Type != PhaseVote {
+			add(p+".phaseId", "案件只能绑定投票阶段：%s 是 %s", c.PhaseID, ph.Type)
+		}
+		if casePhases[c.PhaseID] {
+			add(p+".phaseId", "同一投票阶段只能对应一个案件：%s", c.PhaseID)
+		}
+		casePhases[c.PhaseID] = true
 	}
 	return errs
 }

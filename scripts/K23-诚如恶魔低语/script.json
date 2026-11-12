@@ -22,6 +22,57 @@
     "killerRoleId": "",
     "killerRoleIds": ["r_yeyinghe", "r_qianli", "r_renshilan"],
     "killerKind": "multiple",
+    "cases": [
+      {
+        "id": "fire1",
+        "name": "火之恶魔案·第一案",
+        "phaseId": "p11_vote_case1",
+        "killerRoleIds": ["r_yeyinghe"],
+        "method": "叶颖鹤受炎之恶魔驱使纵火杀人，第一案由他独自制造。"
+      },
+      {
+        "id": "fire2",
+        "name": "火之恶魔案·第二案",
+        "phaseId": "p12_vote_case2",
+        "killerRoleIds": ["r_yeyinghe"],
+        "method": "叶颖鹤受炎之恶魔驱使纵火杀人，第二案由他独自制造。"
+      },
+      {
+        "id": "fire3",
+        "name": "火之恶魔案·第三案",
+        "phaseId": "p13_vote_case3",
+        "killerRoleIds": ["r_yeyinghe"],
+        "method": "叶颖鹤动用周围电线制造大面积停电，借火之恶魔能力行凶。"
+      },
+      {
+        "id": "fire4",
+        "name": "火之恶魔案·第四案",
+        "phaseId": "p14_vote_case4",
+        "killerRoleIds": ["r_yeyinghe"],
+        "method": "叶颖鹤受炎之恶魔驱使纵火杀人，第四案由他独自制造。"
+      },
+      {
+        "id": "fire5",
+        "name": "火之恶魔案·第五案",
+        "phaseId": "p15_vote_case5",
+        "killerRoleIds": ["r_yeyinghe"],
+        "method": "叶颖鹤受炎之恶魔驱使纵火杀人，第五案由他独自制造。"
+      },
+      {
+        "id": "liuanna",
+        "name": "柳安娜之死（日向街纵火案）",
+        "phaseId": "p16_vote_liuanna",
+        "killerRoleIds": ["r_qianli"],
+        "method": "乾理用骨刺击打柳安娜左侧太阳穴致死，随后纵火并布置恶魔降临仪式图。"
+      },
+      {
+        "id": "qinyin",
+        "name": "秦印鑫之死",
+        "phaseId": "p17_vote_qinyin",
+        "killerRoleIds": ["r_renshilan"],
+        "method": "任诗岚用银与电线加热融合成绳，勒断秦印鑫的头部。"
+      }
+    ],
     "summary": "火之恶魔案（五起）均为叶颖鹤所为；日向街纵火案（柳安娜之死）为乾理所为；副局长被杀案（秦印鑫之死）为任诗岚所为。",
     "method": "叶颖鹤是炎之恶魔附身者，五年前因能力暴走连续制造五起火之恶魔案；第三案中他动用周围电线，造成三个街区大面积停电，这是锁定他的关键。日向街纵火案中，乾理（骨之恶魔付文卿）用骨刺击打柳安娜左侧太阳穴致死，随后纵火并布置恶魔降临仪式图。秦印鑫之死的动手顺序为乾理（餐叉刺喉）→叶颖鹤（放电灼烧，未进房间）→姜佃辉（刺胸但未刺穿心脏）→任诗岚（用银与电线加热融合成绳，勒断头部）。",
     "motive": "叶颖鹤受炎之恶魔影响，沉迷杀人的快感，并为摆脱肖煦的追查而连续作案。乾理误以为柳安娜是追猎恶魔的恶魔猎人，冲突中失手杀人，为脱罪纵火并伪装成火之恶魔作案。任诗岚长期被火之恶魔低语影响，又在争执中得知秦印鑫故意让火之恶魔附身于她，最终在火之恶魔的助力下杀死秦印鑫。",

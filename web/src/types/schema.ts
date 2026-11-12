@@ -139,6 +139,21 @@ export const transcriptLineSchema = z.object({
 })
 export type TranscriptLine = z.infer<typeof transcriptLineSchema>
 
+/** 多案剧本的单案真相（K23 七案、K28 三案）。 */
+export const truthCaseSchema = z.object({
+  id: z.string().optional().default(''),
+  name: z.string().optional().default(''),
+  /** 对应投票阶段；空表示该案由 DM 剧本结案。 */
+  phaseId: z.string().optional().default(''),
+  killerRoleId: z.string().optional().default(''),
+  killerRoleIds: z.array(z.string()).nullish().transform((v) => v ?? []),
+  killerKind: z.string().optional().default(''),
+  killerName: z.string().optional().default(''),
+  method: z.string().optional().default(''),
+  motive: z.string().optional().default(''),
+})
+export type TruthCase = z.infer<typeof truthCaseSchema>
+
 export const truthSchema = z.object({
   killerRoleId: z.string().optional().default(''),
   /** 多案/多凶手剧本：揭晓时按这个列表逐个点名。 */
@@ -147,6 +162,7 @@ export const truthSchema = z.object({
   killerKind: z.string().optional().default(''),
   /** NPC 真凶的姓名（不在座）。 */
   killerName: z.string().optional().default(''),
+  cases: z.array(truthCaseSchema).nullish().transform((v) => v ?? []),
   method: z.string().optional().default(''),
   motive: z.string().optional().default(''),
   timeline: z.array(z.string()).nullish().transform((v) => v ?? []),

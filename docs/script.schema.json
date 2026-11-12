@@ -149,6 +149,69 @@
           },
           "description": "全部凶手角色：多案/多凶手剧本把每个有罪的角色都写上，揭晓时逐个点名；不填则只用 killerRoleId。"
         },
+        "killerKind": {
+          "enum": [
+            "",
+            "seat",
+            "npc",
+            "multiple"
+          ],
+          "description": "真凶类型：seat=在座角色，npc=不在座的 NPC（需填 killerName），multiple=多名凶手；留空时按 killerRoleIds 推断。"
+        },
+        "killerName": {
+          "type": "string",
+          "description": "NPC 真凶姓名，仅 killerKind=npc 时使用；不进入任何角色 prompt。"
+        },
+        "cases": {
+          "type": "array",
+          "description": "多案剧本的逐案真相（如 K23 七案、K28 三案）；每案可用 phaseId 绑定一个投票阶段。",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "name"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "phaseId": {
+                "type": "string",
+                "description": "该案对应的投票阶段 id；空表示该案不在投票阶段结案。"
+              },
+              "killerRoleId": {
+                "type": "string"
+              },
+              "killerRoleIds": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "killerKind": {
+                "enum": [
+                  "",
+                  "seat",
+                  "npc",
+                  "multiple"
+                ]
+              },
+              "killerName": {
+                "type": "string"
+              },
+              "method": {
+                "type": "string"
+              },
+              "motive": {
+                "type": "string"
+              }
+            }
+          }
+        },
         "method": {
           "type": "string"
         },

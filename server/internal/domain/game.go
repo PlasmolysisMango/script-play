@@ -151,6 +151,12 @@ const (
 	EvSeat         = "seat.updated"
 )
 
+// VoteAbsentPrefix marks a ballot aimed at somebody who is not seated, e.g.
+// the NPC culprit of K18 谁与争疯. The rest of the string is the typed name.
+// It is stored in the same seatID -> target maps as a role id, so a tally and
+// a replay can count it without a second kind of ballot.
+const VoteAbsentPrefix = "absent:"
+
 // VoteRound is one sealed ballot. PhaseID ties it to the printed question, so
 // a multi-case script keeps its per-round result instead of only the last one.
 type VoteRound struct {
@@ -178,7 +184,7 @@ type Game struct {
 	// its last five players had voted.
 	VoteRounds []VoteRound `json:"voteRounds,omitempty"`
 	NextSeq    int         `json:"nextSeq"`
-	Events     []Event              `json:"events"`
+	Events     []Event     `json:"events"`
 	// Items is the per-seat inventory: seatID -> item names. Items only gate
 	// which clue a seat may search; they never travel into a prompt as prose.
 	Items map[string][]string `json:"items,omitempty"`

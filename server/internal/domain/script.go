@@ -124,16 +124,50 @@ type Truth struct {
 	KillerKind string `json:"killerKind,omitempty"`
 	// KillerName is the NPC's name when KillerKind is "npc". It never reaches a
 	// seat prompt and is only used by the reveal and the host replay.
-	KillerName string   `json:"killerName,omitempty"`
-	Method     string   `json:"method,omitempty"`
-	Motive     string   `json:"motive,omitempty"`
-	Timeline   []string `json:"timeline,omitempty"`
-	Summary    string   `json:"summary,omitempty"`
+	KillerName string `json:"killerName,omitempty"`
+	// Cases splits a multi-case script (K23 诚如恶魔低语 tells seven cases,
+	// K28 女帝攻略 three) into per-case solutions. The flat killer fields above
+	// stay the union, because the reveal and the replay still show one verdict;
+	// Cases is what lets a vote round be checked against the case it asked.
+	Cases    []TruthCase `json:"cases,omitempty"`
+	Method   string      `json:"method,omitempty"`
+	Motive   string      `json:"motive,omitempty"`
+	Timeline []string    `json:"timeline,omitempty"`
+	Summary  string      `json:"summary,omitempty"`
+}
+
+// TruthCase is one case inside a multi-case script.
+type TruthCase struct {
+	ID   string `json:"id"`
+	Name string `json:"name,omitempty"`
+	// PhaseID names the vote phase that asks this case. Empty when the case is
+	// concluded outside a vote (K28's first two cases are settled by DM script).
+	PhaseID       string   `json:"phaseId,omitempty"`
+	KillerRoleID  string   `json:"killerRoleId,omitempty"`
+	KillerRoleIDs []string `json:"killerRoleIds,omitempty"`
+	KillerKind    string   `json:"killerKind,omitempty"`
+	KillerName    string   `json:"killerName,omitempty"`
+	Method        string   `json:"method,omitempty"`
+	Motive        string   `json:"motive,omitempty"`
+}
+
+// Killers returns the case's guilty roles, deduplicated.
+func (c TruthCase) Killers() []string {
+	return mergeKillerIDs(c.KillerRoleID, c.KillerRoleIDs)
+}
+
+// ResolvedKillerKind infers the kind when the case did not state one.
+func (c TruthCase) ResolvedKillerKind() string {
+	return resolvedKillerKind(c.KillerKind, c.KillerName, len(c.Killers()))
 }
 
 // Killers returns every guilty role, in declaration order and without repeats.
 func (t Truth) Killers() []string {
-	out := make([]string, 0, len(t.KillerRoleIDs)+1)
+	return mergeKillerIDs(t.KillerRoleID, t.KillerRoleIDs)
+}
+
+func mergeKillerIDs(primary string, ids []string) []string {
+	out := make([]string, 0, len(ids)+1)
 	add := func(id string) {
 		if id == "" {
 			return
@@ -145,8 +179,8 @@ func (t Truth) Killers() []string {
 		}
 		out = append(out, id)
 	}
-	add(t.KillerRoleID)
-	for _, id := range t.KillerRoleIDs {
+	add(primary)
+	for _, id := range ids {
 		add(id)
 	}
 	return out
@@ -164,15 +198,19 @@ const (
 // script did not say: several role ids means multiple, one means a seat, and
 // no role ids with a KillerName means an NPC.
 func (t Truth) ResolvedKillerKind() string {
-	if t.KillerKind != "" {
-		return t.KillerKind
+	return resolvedKillerKind(t.KillerKind, t.KillerName, len(t.Killers()))
+}
+
+func resolvedKillerKind(kind, name string, killers int) string {
+	if kind != "" {
+		return kind
 	}
-	switch n := len(t.Killers()); {
-	case n > 1:
+	switch {
+	case killers > 1:
 		return KillerKindMultiple
-	case n == 1:
+	case killers == 1:
 		return KillerKindSeat
-	case strings.TrimSpace(t.KillerName) != "":
+	case strings.TrimSpace(name) != "":
 		return KillerKindNPC
 	default:
 		return ""

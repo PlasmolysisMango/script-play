@@ -710,6 +710,8 @@ function PhaseActions({
   const hasPoints = state.pointsLabel !== '' || points > 0
   const skill = state.skill
   const [skillTarget, setSkillTarget] = useState('')
+  // 不在座的真凶（NPC）没有座位按钮，只能由玩家写下名字。
+  const [absentName, setAbsentName] = useState('')
   // 分类抽卡时把规律写在面板上，否则玩家只看到「还剩 3 次」却不知下一张是哪类。
   const drawPlan = (phase?.draws ?? []).map((d) => `${d.kind || '任意线索'} ${d.count} 张`).join(' + ')
   const voteTargets = useMemo(
@@ -860,20 +862,39 @@ function PhaseActions({
           {state.voted ? '你已投票，等待其他玩家…' : '投票阶段：选出你认为的凶手，只能投一次'}
         </p>
         {!state.voted && !spectator ? (
-          <div className="flex flex-wrap gap-2">
-            {voteTargets.map((s) => (
+          <div className="space-y-2">
+            <div className="flex flex-wrap gap-2">
+              {voteTargets.map((s) => (
+                <button
+                  key={s.id}
+                  type="button"
+                  className="btn-ghost text-xs"
+                  onClick={() => send({ type: 'vote.cast', roleId: s.roleId })}
+                >
+                  投给 {s.roleName || s.displayName}
+                </button>
+              ))}
+              <button type="button" className="btn-ghost text-xs" onClick={() => send({ type: 'vote.cast' })}>
+                弃权
+              </button>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <input
+                className="input text-xs"
+                value={absentName}
+                maxLength={20}
+                onChange={(e) => setAbsentName(e.target.value)}
+                placeholder="真凶不在座？写下姓名"
+              />
               <button
-                key={s.id}
                 type="button"
                 className="btn-ghost text-xs"
-                onClick={() => send({ type: 'vote.cast', roleId: s.roleId })}
+                disabled={!absentName.trim()}
+                onClick={() => send({ type: 'vote.cast', roleId: `absent:${absentName.trim()}` })}
               >
-                投给 {s.roleName || s.displayName}
+                投给不在座的人
               </button>
-            ))}
-            <button type="button" className="btn-ghost text-xs" onClick={() => send({ type: 'vote.cast' })}>
-              弃权
-            </button>
+            </div>
           </div>
         ) : null}
         <p className="mt-2 text-xs text-slate-500">已投票 {state.voteCount} 人 · 房主/观战者可以看到计票</p>
@@ -1280,6 +1301,8 @@ function voiceLabel(caps: VoiceCapabilities, on: boolean): string {
 function roleNameOf(visible: Visible, roleId: string): string {
   // An empty target is an abstention, not a missing role.
   if (!roleId) return '弃权'
+  // 「不在座」票（NPC 真凶）以 absent:<姓名> 存储。
+  if (roleId.startsWith('absent:')) return `${roleId.slice('absent:'.length)}（不在座）`
   const seat = (visible.seats ?? []).find((s) => s.roleId === roleId)
   return seat?.roleName || seat?.displayName || roleId
 }

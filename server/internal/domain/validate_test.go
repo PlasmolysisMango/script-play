@@ -110,6 +110,85 @@ func TestValidateAcceptsPublicSearchPhase(t *testing.T) {
 
 // The truth may describe an NPC or several guilty roles; a kind that
 // contradicts its role list must fail at import time, not at the reveal.
+func TestValidateTruthCases(t *testing.T) {
+	withVote := func() *domain.Script {
+		sc := baseScript()
+		sc.Phases = append(sc.Phases, domain.Phase{ID: "pv", Type: domain.PhaseVote, Name: "投票"})
+		return sc
+	}
+	cases := []struct {
+		name   string
+		cases  []domain.TruthCase
+		wantOK bool
+		path   string
+	}{
+		{
+			name:   "a case bound to its vote phase",
+			cases:  []domain.TruthCase{{ID: "c1", Name: "第一案", PhaseID: "pv", KillerRoleID: "r2"}},
+			wantOK: true,
+		},
+		{
+			name:  "unknown killer role",
+			cases: []domain.TruthCase{{ID: "c1", Name: "第一案", KillerRoleID: "r9"}},
+			path:  "truth.cases[0].killerRoleId",
+		},
+		{
+			name:  "unknown phase",
+			cases: []domain.TruthCase{{ID: "c1", Name: "第一案", PhaseID: "nope", KillerRoleID: "r2"}},
+			path:  "truth.cases[0].phaseId",
+		},
+		{
+			name:  "phase must be a vote",
+			cases: []domain.TruthCase{{ID: "c1", Name: "第一案", PhaseID: "p1", KillerRoleID: "r2"}},
+			path:  "truth.cases[0].phaseId",
+		},
+		{
+			name:  "name is required",
+			cases: []domain.TruthCase{{ID: "c1", KillerRoleID: "r2"}},
+			path:  "truth.cases[0].name",
+		},
+		{
+			name:  "duplicate id",
+			cases: []domain.TruthCase{{ID: "c1", Name: "第一案", KillerRoleID: "r2"}, {ID: "c1", Name: "第二案", KillerRoleID: "r2"}},
+			path:  "truth.cases[1].id",
+		},
+		{
+			name: "one vote phase can only answer one case",
+			cases: []domain.TruthCase{
+				{ID: "c1", Name: "第一案", PhaseID: "pv", KillerRoleID: "r2"},
+				{ID: "c2", Name: "第二案", PhaseID: "pv", KillerRoleID: "r2"},
+			},
+			path: "truth.cases[1].phaseId",
+		},
+		{
+			name:  "npc case needs a name",
+			cases: []domain.TruthCase{{ID: "c1", Name: "第一案", KillerKind: domain.KillerKindNPC}},
+			path:  "truth.cases[0].killerName",
+		},
+		{
+			name:  "unknown case kind",
+			cases: []domain.TruthCase{{ID: "c1", Name: "第一案", KillerKind: "ghost", KillerRoleID: "r2"}},
+			path:  "truth.cases[0].killerKind",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sc := withVote()
+			sc.Truth.Cases = tc.cases
+			errs := sc.Validate()
+			if tc.wantOK {
+				if len(errs) > 0 {
+					t.Fatalf("unexpected validation errors: %v", errs)
+				}
+				return
+			}
+			if !hasPath(errs, tc.path) {
+				t.Fatalf("errors = %v, want path %s", errs, tc.path)
+			}
+		})
+	}
+}
+
 func TestValidateKillerKind(t *testing.T) {
 	cases := []struct {
 		name   string

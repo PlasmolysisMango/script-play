@@ -56,6 +56,30 @@ export function ReplayPage({ code }: { code: string }) {
     return names
   }, [data, roleNames])
 
+  // 多案剧本按案列出真相，并把该案绑定的投票结果接在后面，方便逐案核对。
+  const caseRows = useMemo(() => {
+    if (!data) return []
+    const phaseNames = new Map((data.phases ?? []).map((p) => [p.id, p.name]))
+    const resultByPhase = new Map<string, string>()
+    for (const e of data.replay ?? []) {
+      if (e.type === 'vote.result' && e.phaseId) resultByPhase.set(e.phaseId, e.text)
+    }
+    return data.truth.cases.map((c) => {
+      const ids = c.killerRoleIds.length > 0 ? c.killerRoleIds : [c.killerRoleId]
+      const names = ids
+        .filter((id) => id)
+        .map((id) => roleNames[id] ?? data.game.seats.find((s) => s.roleId === id)?.roleName ?? id)
+      if (names.length === 0 && c.killerName) names.push(`${c.killerName}（NPC）`)
+      return {
+        key: c.id || c.name,
+        name: c.name || c.id,
+        killers: names.join('、') || '（见总真相）',
+        phase: c.phaseId ? phaseNames.get(c.phaseId) || c.phaseId : '',
+        result: c.phaseId ? resultByPhase.get(c.phaseId) || '' : '',
+      }
+    })
+  }, [data, roleNames])
+
   // Event logs carry seat ids; the replay should read as names, not ids.
   const seatNames = useMemo(() => {
     const map: Record<string, string> = {}
@@ -117,6 +141,24 @@ export function ReplayPage({ code }: { code: string }) {
           {data.truth.motive ? <p className="mt-1 text-sm text-slate-300">动机：{data.truth.motive}</p> : null}
           {data.truth.summary ? (
             <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-slate-400">{data.truth.summary}</p>
+          ) : null}
+          {caseRows.length > 0 ? (
+            <div className="mt-3">
+              <p className="mb-1 text-xs uppercase tracking-wide text-rose-300/80">逐案真相</p>
+              <ul className="space-y-1 text-sm">
+                {caseRows.map((c) => (
+                  <li key={c.key} className="rounded-lg border border-line/60 px-2 py-1">
+                    <span className="text-slate-200">{c.name}</span>
+                    <span className="text-rose-200">：{c.killers}</span>
+                    {c.result ? (
+                      <span className="ml-1 text-xs text-slate-500">· 投票：{c.result}</span>
+                    ) : c.phase ? (
+                      <span className="ml-1 text-xs text-slate-500">· 投票阶段：{c.phase}</span>
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
+            </div>
           ) : null}
           {data.truth.timeline.length > 0 ? (
             <div className="mt-3">

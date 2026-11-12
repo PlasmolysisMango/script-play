@@ -7,6 +7,7 @@ import (
 	"math/rand"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -3298,7 +3299,7 @@ func (a *Actor) agentVote(ctx context.Context, gen int, seat domain.Seat) {
 	a.thinking(seat, "start")
 	defer a.thinking(seat, "stop")
 
-	instruction := question + "。请只输出一个 JSON 对象：{\"vote\":\"<角色名>\",\"reason\":\"<一句话理由>\"}。vote 必须是本题指向的角色名，不能是自己。"
+	instruction := question + "。请只输出一个 JSON 对象：{\"vote\":\"<角色名>\",\"reason\":\"<一句话理由>\"}。vote 必须填在座角色名，不能是自己；若你怀疑真凶不在座，也可以直接写那个人的姓名。"
 	req := a.pb.BuildVote(PromptInput{Visible: v, Persona: p, Instruction: instruction})
 	text, _, err := a.generate(ctx, gen, seat, req, visibleCorpus(v)...)
 	if err != nil {
@@ -3342,6 +3343,14 @@ func (a *Actor) recordVoteByName(seat domain.Seat, roleName string, v Visible) {
 			}
 		}
 	}
+	// An agent can only name somebody who is not seated if the script has an
+	// NPC culprit; matching the truth name keeps junk model output from
+	// becoming a ballot for a person nobody ever mentioned.
+	if roleID == "" {
+		if name := strings.TrimSpace(a.sc.Truth.KillerName); name != "" && strings.Contains(roleName, name) {
+			roleID = domain.VoteAbsentPrefix + name
+		}
+	}
 	a.mu.Unlock()
 	a.recordVote(seat, roleID)
 }
@@ -3351,6 +3360,31 @@ func (a *Actor) hasVoted(seatID string) bool {
 	defer a.mu.Unlock()
 	_, ok := a.g.Votes[seatID]
 	return ok
+}
+
+// absentVoteName splits an "absent:<name>" ballot into the typed name. It is
+// how a table can vote for the NPC culprit of K18 谁与争疯, who has no seat.
+func absentVoteName(target string) (string, bool) {
+	if !strings.HasPrefix(target, domain.VoteAbsentPrefix) {
+		return "", false
+	}
+	name := strings.TrimSpace(strings.TrimPrefix(target, domain.VoteAbsentPrefix))
+	if name == "" {
+		return "", false
+	}
+	return name, true
+}
+
+// voteTargetName renders a ballot target for the table: a seat's printed role
+// name, or the name of an absent person.
+func voteTargetName(idx domain.ScriptIndex, target string) string {
+	if name, ok := absentVoteName(target); ok {
+		return name + "（不在座）"
+	}
+	if r := idx.RoleByID(target); r != nil {
+		return r.Name
+	}
+	return target
 }
 
 // castVote accepts a ballot from any seated player at any point of the vote
@@ -3379,8 +3413,10 @@ func (a *Actor) castVote(seat domain.Seat, roleID string) error {
 		if roleID == seat.RoleID {
 			return ErrNotAllowed{Reason: "不能投给自己"}
 		}
-		if a.sc.Tokenize().RoleByID(roleID) == nil {
-			return ErrNotAllowed{Reason: "投票目标不存在"}
+		if _, ok := absentVoteName(roleID); !ok {
+			if a.sc.Tokenize().RoleByID(roleID) == nil {
+				return ErrNotAllowed{Reason: "投票目标不存在"}
+			}
 		}
 	}
 	a.recordVoteLocked(seat, roleID)
@@ -3406,11 +3442,7 @@ func (a *Actor) recordVoteLocked(seat domain.Seat, roleID string) {
 	a.g.Votes[seat.ID] = roleID
 	text := "已投票"
 	if roleID != "" {
-		name := roleID
-		if r := a.sc.Tokenize().RoleByID(roleID); r != nil {
-			name = r.Name
-		}
-		text = fmt.Sprintf("%s 投给了 %s", a.speakerLocked(seat), name)
+		text = fmt.Sprintf("%s 投给了 %s", a.speakerLocked(seat), voteTargetName(a.sc.Tokenize(), roleID))
 	} else {
 		text = fmt.Sprintf("%s 弃权", a.speakerLocked(seat))
 	}
@@ -3444,11 +3476,7 @@ func (a *Actor) tallyVotes() {
 	parts := make([]string, 0, len(list))
 	idx := a.sc.Tokenize()
 	for _, it := range list {
-		name := it.role
-		if r := idx.RoleByID(it.role); r != nil {
-			name = r.Name
-		}
-		parts = append(parts, fmt.Sprintf("%s %d 票", name, it.n))
+		parts = append(parts, fmt.Sprintf("%s %d 票", voteTargetName(idx, it.role), it.n))
 	}
 	text := ""
 	switch {
@@ -3498,6 +3526,29 @@ func (a *Actor) tallyVotes() {
 
 // ---- reveal ----
 
+// killerVerdict renders one verdict line: who did it, in the shape the truth
+// declares (seat, several seats, or an NPC who never sat down).
+func killerVerdict(idx domain.ScriptIndex, name string, killers []string) string {
+	names := make([]string, 0, len(killers))
+	for _, id := range killers {
+		n := id
+		if r := idx.RoleByID(id); r != nil {
+			n = r.Name
+		}
+		names = append(names, n)
+	}
+	switch {
+	case len(names) == 1:
+		return fmt.Sprintf("凶手是 %s", names[0])
+	case len(names) > 1:
+		return fmt.Sprintf("共有 %d 名凶手——%s", len(names), strings.Join(names, "、"))
+	case strings.TrimSpace(name) != "":
+		return fmt.Sprintf("凶手是 %s（未在座）", strings.TrimSpace(name))
+	default:
+		return ""
+	}
+}
+
 func (a *Actor) runReveal() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -3511,27 +3562,21 @@ func (a *Actor) runReveal() {
 	// 只能由 summary 交代，不能再拼一句「凶手是 」；脚本若显式给出
 	// killerName，则把它当成 NPC 真凶点名。
 	text := "真相揭晓：" + summary
-	switch {
-	case len(killers) == 1:
-		killerName := killers[0]
-		if r := idx.RoleByID(killers[0]); r != nil {
-			killerName = r.Name
-		}
-		text = fmt.Sprintf("真相揭晓：凶手是 %s。%s", killerName, summary)
-	case len(killers) > 1:
-		// 多案本（K27 女帝攻略的三桩命案各有一个真凶）：只念一个人的名字会让
-		// 投对了另一案的玩家以为自己错了。
-		names := make([]string, 0, len(killers))
-		for _, id := range killers {
-			name := id
-			if r := idx.RoleByID(id); r != nil {
-				name = r.Name
+	if verdict := killerVerdict(idx, a.sc.Truth.KillerName, killers); verdict != "" {
+		text = "真相揭晓：" + verdict + "。" + summary
+	}
+	// 多案本（K23 七个案子、K28 三案）按案列出，单案本只是重复上面那句，
+	// 因此只在脚本真的给了 cases 时追加。
+	if len(a.sc.Truth.Cases) > 0 {
+		lines := make([]string, 0, len(a.sc.Truth.Cases))
+		for _, c := range a.sc.Truth.Cases {
+			if verdict := killerVerdict(idx, c.KillerName, c.Killers()); verdict != "" {
+				lines = append(lines, fmt.Sprintf("%s：%s", c.Name, verdict))
 			}
-			names = append(names, name)
 		}
-		text = fmt.Sprintf("真相揭晓：本案共有 %d 名凶手——%s。%s", len(names), strings.Join(names, "、"), summary)
-	case strings.TrimSpace(a.sc.Truth.KillerName) != "":
-		text = fmt.Sprintf("真相揭晓：凶手是 %s（未在座）。%s", strings.TrimSpace(a.sc.Truth.KillerName), summary)
+		if len(lines) > 0 {
+			text += "\n\n【逐案真相】\n" + strings.Join(lines, "\n")
+		}
 	}
 	meta := map[string]string{}
 	if len(killers) > 0 {
@@ -3543,6 +3588,9 @@ func (a *Actor) runReveal() {
 	}
 	if name := strings.TrimSpace(a.sc.Truth.KillerName); name != "" {
 		meta["killerName"] = name
+	}
+	if len(a.sc.Truth.Cases) > 0 {
+		meta["cases"] = strconv.Itoa(len(a.sc.Truth.Cases))
 	}
 	phaseID := ""
 	if ph := a.m.Current(a.g); ph != nil {

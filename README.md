@@ -162,7 +162,7 @@ cd server && go run ./cmd/scriptcheck ../scripts/K11-再见苏西/script.json
 | `roles[]` | `id`、`name`、`personaId`—、`public{intro,appearance}`—、`private{script,secrets[],goals[],knownFactIds[]}` |
 | `clues[]` | `id`、`title`、`content`（Markdown）、`location`—、`back`—（卡背，搜证选项只露这一行）、`ownerRoleId`—、`subjectRoleId`—、`mustReveal`—、`isPublic`—、`grantsItem`—、`requiresItems`—、`unlockedBy`—、`keywords`—、`imageUrl`—、`links{roles,secrets,facts}`— |
 | `facts[]` | `id`、`text` |
-| `truth` | `killerRoleId`、`killerRoleIds[]`—（多凶手）、`killerKind`—（`seat`/`npc`/`multiple`）、`killerName`—（NPC 真凶姓名）、`method`—、`motive`—、`timeline[]`—、`summary`—（复盘全文，Markdown） |
+| `truth` | `killerRoleId`、`killerRoleIds[]`—（多凶手并集）、`killerKind`—（`seat`/`npc`/`multiple`）、`killerName`—（NPC 真凶姓名）、`cases[]`—（多案剧本逐案真相：`id`/`name`/`phaseId`—/`killerRoleId`—/`killerRoleIds[]`—/`killerKind`—/`killerName`—/`method`—/`motive`—）、`method`—、`motive`—、`timeline[]`—、`summary`—（复盘全文，Markdown） |
 
 `public.intro` 是开局所有人可见的一句话，`private.script` 是该角色的完整角色本（Markdown），
 `truth` 永远不进任何角色的 prompt，只在主持人与复盘里出现。
@@ -236,7 +236,7 @@ cd server && go run ./cmd/scriptcheck ../scripts/K11-再见苏西/script.json
 | 两两私聊、单独交换情报 | `type: discussion` 段，玩家自己发 `whisper.send` | 只有双方看得到，不占麦也不进前情提要；AI 被私聊会私下回一句 |
 | 必须当众念出、不能把卡递给别人 | 写进 `dmScript` | 社交规则，引擎只负责记录（不阻止转述） |
 | 要三个人同意才能开挖 | `requiresItems` + `dmScript` | 物品由引擎管，人数协商写在手册里 |
-| 指认凶手、按被指认者分结局 | `type: vote` + `truth` + `reveal` 段 `dmScript` | 引擎计票并锁定得票者，分支写进复盘文本 |
+| 指认凶手、按被指认者分结局 | `type: vote` + `truth` + `reveal` 段 `dmScript` | 引擎计票并锁定得票者，分支写进复盘文本；真凶不在座（`killerKind: npc`）时玩家可填写姓名投票，记票为「某某（不在座）」 |
 | 固定人数、每人一角色 | `meta.playerCount` + `roles[]` | 房间座位数受剧本限制，AI 补位 |
 
 能力边界：引擎只管「谁能看到、谁能取到、取了之后多出什么」。
