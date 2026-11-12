@@ -653,8 +653,8 @@
       "location": "后台·化妆间镜子旁",
       "back": "一张泛黄的六人合影。",
       "isPublic": true,
-      "content": "一张2006年的黑白合影。六个人站在回声剧院的舞台上，背后是红丝绒幕布。沈望舒站在最左边，手里卷着剧本；顾青岚站在最右边，低着头；陆停舟、白露、周声、林晚照依次站在中间。\n\n照片背面有一行钢笔字：\n\n> 最后一次排练。\n\n![六人合影](/script-assets/K29-第六次谢幕/images/group-photo.png)",
-      "imageUrl": "/script-assets/K29-第六次谢幕/images/group-photo.png",
+      "content": "一张2006年的黑白合影。六个人站在回声剧院的舞台上，背后是红丝绒幕布。沈望舒站在最左边，手里卷着剧本；顾青岚站在最右边，低着头；陆停舟、白露、周声、林晚照依次站在中间。\n\n照片背面有一行钢笔字：\n\n> 最后一次排练。\n\n![六人合影](/script-assets/AI-29-第六次谢幕/images/group-photo.png)",
+      "imageUrl": "/script-assets/AI-29-第六次谢幕/images/group-photo.png",
       "links": {
         "facts": [
           "f1"
@@ -750,8 +750,8 @@
       "location": "后台·墙上",
       "back": "一张手绘的剧院平面图。",
       "isPublic": true,
-      "content": "手绘剧院平面图，用粉笔标了七个区域：\n\n1. 舞台\n2. 后台走廊\n3. 道具间\n4. 服装间\n5. 经理办公室\n6. 观众席\n7. 废弃侧翼\n\n经理办公室和道具间只隔着一堵薄墙。图上用红笔圈出了后台的两扇门，旁边写着：“锁。”\n\n![剧院平面图](/script-assets/K29-第六次谢幕/images/floorplan.png)",
-      "imageUrl": "/script-assets/K29-第六次谢幕/images/floorplan.png",
+      "content": "手绘剧院平面图，用粉笔标了七个区域：\n\n1. 舞台\n2. 后台走廊\n3. 道具间\n4. 服装间\n5. 经理办公室\n6. 观众席\n7. 废弃侧翼\n\n经理办公室和道具间只隔着一堵薄墙。图上用红笔圈出了后台的两扇门，旁边写着：“锁。”\n\n![剧院平面图](/script-assets/AI-29-第六次谢幕/images/floorplan.png)",
+      "imageUrl": "/script-assets/AI-29-第六次谢幕/images/floorplan.png",
       "links": {
         "facts": [
           "f5"
@@ -812,8 +812,8 @@
       "back": "一张蜡笔画，画着舞台和火。",
       "isPublic": false,
       "mustReveal": true,
-      "content": "一张蜡笔画，画在烧焦的牛皮纸上。六个火柴人站在舞台上，手拉手。观众席最后一排坐着一个很小的第七人，穿红裙子。幕布上画着橘红色的火。\n\n画纸背面用铅笔写着歪歪扭扭的字：\n\n> 爸爸妈妈，还有六个叔叔阿姨。\n> 我在下面看你们。\n\n![儿童画](/script-assets/K29-第六次谢幕/images/child-drawing.png)",
-      "imageUrl": "/script-assets/K29-第六次谢幕/images/child-drawing.png",
+      "content": "一张蜡笔画，画在烧焦的牛皮纸上。六个火柴人站在舞台上，手拉手。观众席最后一排坐着一个很小的第七人，穿红裙子。幕布上画着橘红色的火。\n\n画纸背面用铅笔写着歪歪扭扭的字：\n\n> 爸爸妈妈，还有六个叔叔阿姨。\n> 我在下面看你们。\n\n![儿童画](/script-assets/AI-29-第六次谢幕/images/child-drawing.png)",
+      "imageUrl": "/script-assets/AI-29-第六次谢幕/images/child-drawing.png",
       "links": {
         "facts": [
           "f3",
@@ -1100,8 +1100,8 @@
       "back": "一条烧熔在地上的铁链。",
       "isPublic": true,
       "mustReveal": true,
-      "content": "后台门上的铁链被高温烧熔，和门把手粘在一起。锁头完好，锁孔里插着半截断钥匙。\n\n门内侧的地板上有一串小小的脚印，从门口一直延伸到舞台方向。\n\n![烧毁的舞台](/script-assets/K29-第六次谢幕/images/stage.png)",
-      "imageUrl": "/script-assets/K29-第六次谢幕/images/stage.png",
+      "content": "后台门上的铁链被高温烧熔，和门把手粘在一起。锁头完好，锁孔里插着半截断钥匙。\n\n门内侧的地板上有一串小小的脚印，从门口一直延伸到舞台方向。\n\n![烧毁的舞台](/script-assets/AI-29-第六次谢幕/images/stage.png)",
+      "imageUrl": "/script-assets/AI-29-第六次谢幕/images/stage.png",
       "links": {
         "facts": [
           "f5"
