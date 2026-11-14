@@ -9,13 +9,17 @@ import (
 
 // TranscriptLine is one public line an agent or human may be shown.
 type TranscriptLine struct {
-	Seq     int       `json:"seq"`
-	Kind    string    `json:"kind"` // dm | speech | system | reveal
-	SeatID  string    `json:"seatId,omitempty"`
-	RoleID  string    `json:"roleId,omitempty"`
-	Speaker string    `json:"speaker,omitempty"`
-	Text    string    `json:"text"`
-	At      time.Time `json:"at"`
+	Seq     int    `json:"seq"`
+	Kind    string `json:"kind"` // dm | speech | system | reveal
+	SeatID  string `json:"seatId,omitempty"`
+	RoleID  string `json:"roleId,omitempty"`
+	Speaker string `json:"speaker,omitempty"`
+	Text    string `json:"text"`
+	// ImageURL is a picture attached to the line. Clue events fill it from the
+	// card so a revealed piece of evidence shows the same scan in the log as in
+	// the clue panel.
+	ImageURL string    `json:"imageUrl,omitempty"`
+	At       time.Time `json:"at"`
 }
 
 // Visible is the complete information set for one seat. It is the only type
@@ -146,6 +150,10 @@ func VisibleFor(g *domain.Game, sc *domain.Script, seat *domain.Seat, opt Visibl
 	}
 	if g.PhaseIndex >= 0 && g.PhaseIndex < len(sc.Phases) {
 		v.Phase = sc.Phases[g.PhaseIndex]
+		// The dice rulebook holds every role's private question cards and the
+		// target's mandatory answer fragments. Only the per-seat DiceView goes
+		// over the wire; the raw config would hand the whole table the cards.
+		v.Phase.Dice = nil
 		if v.Round == 0 {
 			v.Round = v.Phase.Round
 		}
@@ -184,6 +192,7 @@ func VisibleFor(g *domain.Game, sc *domain.Script, seat *domain.Seat, opt Visibl
 		if r := idx.RoleByID(seat.RoleID); r != nil {
 			v.Self.RoleName = r.Name
 			cp := *r
+			cp.Private.Script = gateRoleScript(cp.Private.Script, sc, g.PhaseIndex)
 			v.OwnRole = &cp
 			for _, fid := range r.Private.KnownFactIDs {
 				if f := idx.Facts[fid]; f != nil {
@@ -230,9 +239,20 @@ func VisibleFor(g *domain.Game, sc *domain.Script, seat *domain.Seat, opt Visibl
 			continue
 		}
 		switch ev.Type {
-		case domain.EvDM, domain.EvSpeech, domain.EvWhisper, domain.EvSystem, domain.EvReveal, domain.EvPhase, domain.EvClueRevealed:
+		case domain.EvDM, domain.EvSpeech, domain.EvWhisper, domain.EvSystem, domain.EvDice, domain.EvReveal, domain.EvPhase, domain.EvClueFound, domain.EvClueRevealed:
 		default:
 			continue
+		}
+		// An empty dice event is only a live state-refresh tick; it has no place
+		// in a stored transcript or an agent prompt.
+		if ev.Type == domain.EvDice && strings.TrimSpace(ev.Text) == "" {
+			continue
+		}
+		imageURL := ""
+		if ev.ClueID != "" {
+			if c := idx.ClueByID(ev.ClueID); c != nil {
+				imageURL = c.ImageURL
+			}
 		}
 		// 卡牌本里 roleId 就是积分卡的答案：真相翻开前，连自己的发言行也
 		// 不带它——speaker 已经写着座位名 / 角色名，前端不需要再猜。
@@ -241,13 +261,14 @@ func VisibleFor(g *domain.Game, sc *domain.Script, seat *domain.Seat, opt Visibl
 			lineRole = ""
 		}
 		v.Transcript = append(v.Transcript, TranscriptLine{
-			Seq:     ev.Seq,
-			Kind:    ev.Type,
-			SeatID:  ev.SeatID,
-			RoleID:  lineRole,
-			Speaker: ev.Speaker,
-			Text:    ev.Text,
-			At:      ev.At,
+			Seq:      ev.Seq,
+			Kind:     ev.Type,
+			SeatID:   ev.SeatID,
+			RoleID:   lineRole,
+			Speaker:  ev.Speaker,
+			Text:     ev.Text,
+			ImageURL: imageURL,
+			At:       ev.At,
 		})
 	}
 	if opt.MaxTranscript > 0 && len(v.Transcript) > opt.MaxTranscript {

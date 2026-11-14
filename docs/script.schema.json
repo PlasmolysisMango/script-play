@@ -253,10 +253,11 @@
             "play",
             "score",
             "discussion",
+            "dice",
             "vote",
             "reveal"
           ],
-          "description": "阶段类型。play / score 只用于 mode=cardgame 的剧本。"
+          "description": "阶段类型。play / score 只用于 mode=cardgame 的剧本。dice 是骰子提问（K13）：系统掷骰决出提问方和回答方。"
         },
         "name": {
           "type": "string"
@@ -383,6 +384,52 @@
             "type": "string"
           },
           "description": "专属线索：阶段开始时直接交到主人手里的卡（K10 曲径通幽 06-10「××专属线索」），不进牌堆。"
+        },
+        "dice": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "rounds"
+          ],
+          "description": "骰子提问规则（只有 type=dice 使用）。每轮所有人掷骰，点数最大的人向点数最小的人提一个问题；同点按 tieBreak 加成结算，加成只用于打破同点，不会让 5+3 盖过单独的 6。问题卡和必答内容按座位私下下发，不会整表广播。",
+          "properties": {
+            "rounds": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "sides": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "骰子面数，默认 6。"
+            },
+            "tieBreak": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "integer"
+              },
+              "description": "角色 id → 同点加成（K13：罗素 +3、安安 +2、李斯楠 +1）。"
+            },
+            "questions": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "description": "角色 id → 该角色的专属问题卡。只有点数最大的本人能看到并选择。"
+            },
+            "keywords": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                }
+              },
+              "description": "角色 id → {关键词: 必答内容}。问题正文出现关键词时，回答方会收到必须说到的内容；AI 回答时也按这条约束生成。"
+            }
+          }
         },
         "votePrompt": {
           "type": "string",
@@ -528,7 +575,8 @@
           "properties": {
             "script": {
               "type": "string",
-              "minLength": 1
+              "minLength": 1,
+              "description": "角色本（Markdown）。可用 <!-- read-hold:阶段id --> 锁住其后的内容，直到对局进入该阶段才下发；用 <!-- /read-hold --> 提前结束锁定区。没有结束标记时锁定到下一次锁定或角色本末尾，对应印刷本的「请勿翻开下一页」。"
             },
             "secrets": {
               "type": "array",

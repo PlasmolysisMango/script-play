@@ -185,6 +185,11 @@ type Actor struct {
 	// timer before the walk notices.
 	voteWake chan struct{}
 
+	// dice is the live dice-question round (K13). diceWake releases its loop
+	// whenever a seat rolls, asks or answers.
+	dice     *diceState
+	diceWake chan struct{}
+
 	speech   map[string]int
 	searched map[string]int
 	floor    *Floor
@@ -394,6 +399,9 @@ type SeatState struct {
 	// Prompt is the one thing the table is blocked on right now. Only the host
 	// ever receives one.
 	Prompt *TurnPrompt `json:"prompt,omitempty"`
+	// Dice is the dice-question table: rolls, whose turn it is to ask, and the
+	// private question cards / required answer pieces for this seat.
+	Dice *DiceView `json:"dice,omitempty"`
 	// Hand is this seat's cards in a card-game script (empty elsewhere).
 	Hand []CardView `json:"hand,omitempty"`
 	// Table is the public half of the card table plus this seat's legal moves.
@@ -530,6 +538,9 @@ func (a *Actor) stateLocked(seat *domain.Seat, includeTruth bool) SeatState {
 	if a.awaitingOrder && seat != nil && seat.ID == a.orderSeatID {
 		st.Prompt = a.orderPromptLocked()
 	}
+	if a.dice != nil && seat != nil {
+		st.Dice = a.diceViewLocked(seat)
+	}
 	if a.g.Cards != nil && len(a.g.Cards.Order) > 0 {
 		st.Table = a.tableViewLocked(seat)
 		if seat != nil && seat.Kind != domain.SeatSpectator {
@@ -620,6 +631,12 @@ func (a *Actor) Handle(ctx context.Context, seatID string, msg ClientMessage) er
 		// currently prompting: a player who clicks early must not be rejected and
 		// then have to notice the next prompt to try again.
 		return a.castVote(*seat, msg.RoleID)
+	case "dice.roll":
+		return a.diceRoll(*seat)
+	case "dice.ask":
+		return a.diceAsk(*seat, msg.Text)
+	case "dice.answer":
+		return a.diceAnswer(*seat, msg.Text)
 	}
 
 	if waitCh != nil {
@@ -636,6 +653,9 @@ func (a *Actor) Handle(ctx context.Context, seatID string, msg ClientMessage) er
 		text := strings.TrimSpace(msg.Text)
 		if text == "" {
 			return ErrNotAllowed{Reason: "发言内容为空"}
+		}
+		if phase != nil && phase.Type == domain.PhaseDice {
+			return a.diceSpeak(*seat, text)
 		}
 		if a.holdTalk(*seat, text, msg.ReplyTo) {
 			return nil
@@ -808,6 +828,8 @@ func (a *Actor) beginPhase(ctx context.Context) {
 	a.floor = nil
 	a.phaseDone = false
 	a.voteClosed = false
+	a.dice = nil
+	a.diceWake = make(chan struct{}, 1)
 	a.resetTalkLocked()
 	if ph.Type == domain.PhaseVote {
 		// 每个投票阶段是独立的一轮：不清掉上一轮，主持人的计票面板会带着
@@ -860,6 +882,8 @@ func (a *Actor) beginPhase(ctx context.Context) {
 		go a.runSearch(ctx, gen)
 	case domain.PhaseDiscussion:
 		go a.runDiscussion(ctx, gen)
+	case domain.PhaseDice:
+		go a.runDice(ctx, gen)
 	case domain.PhaseVote:
 		go a.runVote(ctx, gen)
 	case domain.PhaseReveal:
@@ -981,6 +1005,9 @@ func (a *Actor) cancelWaiterLocked() {
 	// Waiters belong to the phase that is ending. Dropping the routes keeps a
 	// command for the next phase from landing in a dead channel.
 	a.waiters = map[string]chan ClientMessage{}
+	// The dice loop parks on its own channel rather than a waiter; wake it so
+	// it notices the generation change instead of leaking a goroutine.
+	a.wakeDice()
 }
 
 func (a *Actor) finishLocked(reason string) {
@@ -1170,12 +1197,13 @@ func (a *Actor) awaitOrder(ctx context.Context, gen int, ph *domain.Phase) bool 
 
 // orderAssigneeLocked is who lays out the phase order. host_assigned gives the
 // panel to the moderator; role_assigned gives it to the named role's player
-// (K7 船长). An unseated role falls back to the host so the phase never stalls.
+// (K7 船长). An unseated role, or one played by an agent, falls back to the host
+// so the phase never stalls on a seat that cannot submit an order.
 func (a *Actor) orderAssigneeLocked(ph *domain.Phase) *domain.Seat {
 	if ph.Order == domain.OrderRoleAssigned && ph.OrderRoleID != "" {
 		for i := range a.g.Seats {
 			s := &a.g.Seats[i]
-			if s.RoleID == ph.OrderRoleID && s.Kind != domain.SeatSpectator {
+			if s.RoleID == ph.OrderRoleID && s.Kind != domain.SeatAgent && s.Kind != domain.SeatSpectator {
 				return s
 			}
 		}
@@ -1493,7 +1521,7 @@ func (a *Actor) assignLeftoversLocked(ph *domain.Phase) {
 				RoleID:  roleID,
 				ClueID:  id,
 				Text:    fmt.Sprintf("搜证结束，剩余线索【%s】公开%s：%s", c.Title, forWhat, c.Content),
-				Meta:    map[string]string{"title": c.Title, "content": c.Content},
+				Meta:    map[string]string{"title": c.Title, "content": c.Content, "imageUrl": c.ImageURL},
 			})
 			a.unlockKeywordsLocked(c.Title + " " + c.Content)
 			continue
@@ -2358,7 +2386,7 @@ func (a *Actor) claimClue(seat domain.Seat, clueID string, ph *domain.Phase) err
 			RoleID:  seat.RoleID,
 			ClueID:  clueID,
 			Text:    fmt.Sprintf("%s 搜到并公开了线索【%s】：%s", a.speakerLocked(seat), c.Title, c.Content),
-			Meta:    map[string]string{"title": c.Title, "content": c.Content},
+			Meta:    map[string]string{"title": c.Title, "content": c.Content, "imageUrl": c.ImageURL},
 		})
 	} else {
 		a.appendLocked(domain.Event{
@@ -2369,7 +2397,7 @@ func (a *Actor) claimClue(seat domain.Seat, clueID string, ph *domain.Phase) err
 			ClueID:     clueID,
 			Visibility: SeatVisibility(seat.ID),
 			Text:       fmt.Sprintf("你搜到线索【%s】：%s", c.Title, c.Content),
-			Meta:       map[string]string{"title": c.Title},
+			Meta:       map[string]string{"title": c.Title, "imageUrl": c.ImageURL},
 		})
 		a.appendLocked(domain.Event{
 			Type:    domain.EvSystem,
@@ -2523,7 +2551,7 @@ func (a *Actor) unlockKeywordsLocked(text string) {
 			ClueID:     c.ID,
 			Visibility: SeatVisibility(owner.ID),
 			Text:       fmt.Sprintf("关键词「%s」触发了你的记忆碎片【%s】：%s", hit, c.Title, c.Content),
-			Meta:       map[string]string{"title": c.Title, "keyword": hit},
+			Meta:       map[string]string{"title": c.Title, "keyword": hit, "imageUrl": c.ImageURL},
 		})
 	}
 	a.persistLocked()
@@ -2633,7 +2661,7 @@ func (a *Actor) revealClue(seat domain.Seat, clueID string) error {
 		RoleID:  seat.RoleID,
 		ClueID:  clueID,
 		Text:    fmt.Sprintf("%s 公开了线索【%s】：%s", a.speakerLocked(seat), c.Title, c.Content),
-		Meta:    map[string]string{"title": c.Title, "content": c.Content},
+		Meta:    map[string]string{"title": c.Title, "content": c.Content, "imageUrl": c.ImageURL},
 	})
 	a.unlockKeywordsLocked(c.Title + " " + c.Content)
 	a.persistLocked()
@@ -2836,7 +2864,7 @@ func (a *Actor) skillShowCluesLocked(caster, target domain.Seat, sk *domain.Skil
 				RoleID:  target.RoleID,
 				ClueID:  id,
 				Text:    fmt.Sprintf("被迫公开的线索【%s】：%s", c.Title, c.Content),
-				Meta:    map[string]string{"title": c.Title, "content": c.Content},
+				Meta:    map[string]string{"title": c.Title, "content": c.Content, "imageUrl": c.ImageURL},
 			})
 			a.unlockKeywordsLocked(c.Title + " " + c.Content)
 			continue
@@ -2849,7 +2877,7 @@ func (a *Actor) skillShowCluesLocked(caster, target domain.Seat, sk *domain.Skil
 			ClueID:     id,
 			Visibility: PairVisibility(caster.ID, target.ID),
 			Text:       fmt.Sprintf("%s 向你展示了线索【%s】：%s", a.speakerLocked(target), c.Title, c.Content),
-			Meta:       map[string]string{"title": c.Title, "content": c.Content},
+			Meta:       map[string]string{"title": c.Title, "content": c.Content, "imageUrl": c.ImageURL},
 		})
 	}
 }

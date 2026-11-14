@@ -127,18 +127,26 @@ func (a *Actor) queueWantsLocked(speakerID, text string) {
 	}
 	limit := a.talkLimitLocked(ph)
 	now := time.Now()
+	speakerIsHuman := false
+	if s := a.g.SeatByID(speakerID); s != nil && s.Kind == domain.SeatHuman {
+		speakerIsHuman = true
+	}
 	for i := range a.g.Seats {
 		s := &a.g.Seats[i]
 		if s.Kind != domain.SeatAgent || s.ID == speakerID {
 			continue
 		}
-		if a.talkBudget[s.ID] >= limit || a.talkIndexOfLocked(s.ID) >= 0 {
+		if a.talkIndexOfLocked(s.ID) >= 0 {
 			continue
 		}
-		if now.Sub(a.talkAt[s.ID]) < 4*time.Second {
-			continue
-		}
+		// A human who names an agent is asking it a direct question. That must
+		// not be swallowed by the volunteer budget or the anti-chatter cooldown;
+		// otherwise a seat that already spoke its fill looks deaf at the table.
 		mentioned := strings.Contains(text, a.speakerLocked(*s))
+		directed := mentioned && speakerIsHuman
+		if !directed && (a.talkBudget[s.ID] >= limit || now.Sub(a.talkAt[s.ID]) < 4*time.Second) {
+			continue
+		}
 		want := mentioned || a.personas[s.ID].Talkativeness*0.4 > rand.Float64()
 		if !want {
 			continue
@@ -455,6 +463,8 @@ func (a *Actor) agentTurns(ctx context.Context, gen int, seat domain.Seat, ph *d
 	if maxSteps <= 0 {
 		maxSteps = 1
 	}
+	// An answer owed to a human is not an unsolicited interjection: it stays
+	// legal even after the seat has spent its volunteer budget for this phase.
 	for step := 0; step < maxSteps; step++ {
 		if !a.alive(gen) {
 			return
@@ -464,8 +474,9 @@ func (a *Actor) agentTurns(ctx context.Context, gen int, seat domain.Seat, ph *d
 			a.mu.Unlock()
 			return
 		}
+		answersHuman := a.answersHumanLocked(slot)
 		// Checked per step: a chain of reveals must not outrun the budget.
-		if a.talkBudget[seat.ID] >= a.talkLimitLocked(ph) {
+		if !answersHuman && a.talkBudget[seat.ID] >= a.talkLimitLocked(ph) {
 			a.mu.Unlock()
 			return
 		}
@@ -522,6 +533,17 @@ func (a *Actor) agentTurns(ctx context.Context, gen int, seat domain.Seat, ph *d
 		// instead of queueing behind somebody else.
 		slot = SpeechSlot{SeatID: seat.ID, Kind: SlotRequest, ReplyTo: slot.ReplyTo}
 	}
+}
+
+// answersHumanLocked reports whether this slot is an answer owed to a human
+// seat. Mentions and the client's 「回应」 both produce a ReplyTo, so one check
+// covers both routes into a direct answer.
+func (a *Actor) answersHumanLocked(slot SpeechSlot) bool {
+	if slot.ReplyTo == "" {
+		return false
+	}
+	s := a.g.SeatByID(slot.ReplyTo)
+	return s != nil && s.Kind == domain.SeatHuman
 }
 
 // talkInstruction phrases this tick for the model. The wording differs because
@@ -601,8 +623,11 @@ func (a *Actor) observeLocked(seat domain.Seat, limit int) []TranscriptLine {
 			continue
 		}
 		switch ev.Type {
-		case domain.EvSpeech, domain.EvWhisper, domain.EvDM, domain.EvSystem, domain.EvClueRevealed, domain.EvPhase:
+		case domain.EvSpeech, domain.EvWhisper, domain.EvDM, domain.EvSystem, domain.EvDice, domain.EvClueRevealed, domain.EvPhase:
 		default:
+			continue
+		}
+		if ev.Type == domain.EvDice && strings.TrimSpace(ev.Text) == "" {
 			continue
 		}
 		out = append(out, TranscriptLine{

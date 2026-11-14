@@ -18,6 +18,7 @@ const (
 	PhaseOpening    = "opening"
 	PhaseSearch     = "search"
 	PhaseDiscussion = "discussion"
+	PhaseDice       = "dice"
 	PhaseVote       = "vote"
 	PhaseReveal     = "reveal"
 )
@@ -240,6 +241,9 @@ type Phase struct {
 	// If that role is not seated the host takes the panel instead of stalling.
 	OrderRoleID string `json:"orderRoleId,omitempty"`
 	TimeoutSec  int    `json:"timeoutSec,omitempty"`
+	// Dice turns the phase into a rolling contest: the highest total asks the
+	// lowest one a question from its own card list, and the target answers.
+	Dice *DiceRules `json:"dice,omitempty"`
 	// OnlyRoleIDs narrows a phase to some of the roles. K5's 「查理的记忆」 is
 	// dealt by the cat alone, and its three search rounds are the printed
 	// "每位巫师抽 N 张" — the cat never searches. Without it the other seats
@@ -304,6 +308,27 @@ type Phase struct {
 	// ThroneRoleID is the seat that holds the throne in that race (K12 皇后).
 	// A SettleFavor phase needs it to know who can be deposed.
 	ThroneRoleID string `json:"throneRoleId,omitempty"`
+}
+
+// DiceRules describes a dice-question phase (K13: twenty rounds of "highest
+// roll asks the lowest one"). Questions are private cards owned by the asking
+// role; Keywords are the target's required answer fragments, matched against
+// the question text so the answering prompt can name what must be said.
+type DiceRules struct {
+	// Rounds is how many ask/answer exchanges the phase runs. Sides defaults
+	// to six when omitted.
+	Rounds int `json:"rounds"`
+	Sides  int `json:"sides,omitempty"`
+	// TieBreak adds to a tied roll. It is only applied to the players whose
+	// raw rolls are equal, exactly as the printed rule says ("如遇相同点数，
+	// 罗素可加3…以最后数字为准").
+	TieBreak map[string]int `json:"tieBreak,omitempty"`
+	// Questions maps a role id to the question cards that role reads when it
+	// wins the roll. The list is never published to other seats.
+	Questions map[string][]string `json:"questions,omitempty"`
+	// Keywords maps a role id to "keyword → required answer". A keyword found
+	// in the question makes the matching fragment mandatory in the answer.
+	Keywords map[string]map[string]string `json:"keywords,omitempty"`
 }
 
 // Skill is one printed special ability (K6: 每位仙主一个，消耗仙骨，全程一次).

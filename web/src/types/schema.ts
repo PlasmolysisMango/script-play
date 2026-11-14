@@ -135,6 +135,7 @@ export const transcriptLineSchema = z.object({
   roleId: z.string().optional().default(''),
   speaker: z.string().optional().default(''),
   text: z.string(),
+  imageUrl: z.string().optional().default(''),
   at: z.string().optional().default(''),
 })
 export type TranscriptLine = z.infer<typeof transcriptLineSchema>
@@ -308,6 +309,38 @@ export const tableViewSchema = z.object({
 })
 export type TableView = z.infer<typeof tableViewSchema>
 
+/** 骰子提问：公开的每一轮点数。 */
+export const diceRollSchema = z.object({
+  seatId: z.string(),
+  roleId: z.string().optional().default(''),
+  speaker: z.string().optional().default(''),
+  value: z.number(),
+  /** 同点时才生效的剧本加成（K13：罗素 +3、安安 +2、李斯楠 +1）。 */
+  bonus: z.number().optional().default(0),
+})
+export type DiceRoll = z.infer<typeof diceRollSchema>
+
+/**
+ * 骰子提问的桌面。choices / required 只下发给本人：提问方拿到自己的问题卡，
+ * 回答方拿到关键词对应的必答内容。
+ */
+export const diceViewSchema = z.object({
+  round: z.number().optional().default(0),
+  rounds: z.number().optional().default(0),
+  sides: z.number().optional().default(6),
+  stage: z.string().optional().default(''),
+  rolls: z.array(diceRollSchema).nullish().transform((v) => v ?? []),
+  askerSeatId: z.string().optional().default(''),
+  targetSeatId: z.string().optional().default(''),
+  question: z.string().optional().default(''),
+  choices: z.array(z.string()).nullish().transform((v) => v ?? []),
+  required: z.array(z.string()).nullish().transform((v) => v ?? []),
+  needRoll: z.boolean().optional().default(false),
+  needAsk: z.boolean().optional().default(false),
+  needAnswer: z.boolean().optional().default(false),
+})
+export type DiceView = z.infer<typeof diceViewSchema>
+
 export const seatStateSchema = z.object({
   visible: visibleSchema,
   phases: z.array(phaseSummarySchema).nullish().transform((v) => v ?? []),
@@ -337,6 +370,8 @@ export const seatStateSchema = z.object({
   talkOpen: z.boolean().optional().default(false),
   queue: z.array(speechSlotSchema).nullish().transform((v) => v ?? []),
   prompt: turnPromptSchema.nullish().transform((v) => v ?? undefined),
+  /** 骰子提问阶段：点数、提问方/回答方和本人可用的私密卡片。 */
+  dice: diceViewSchema.nullish().transform((v) => v ?? undefined),
   /** 卡牌本：本人的手牌。 */
   hand: z.array(cardViewSchema).nullish().transform((v) => v ?? []),
   /** 卡牌本：台面（含本人当前可出的牌）。 */

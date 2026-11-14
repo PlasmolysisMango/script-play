@@ -19,7 +19,7 @@ function ev(partial: Partial<GameEvent>): GameEvent {
   }
 }
 
-function stateWith(transcript: { seq: number; kind: string; text: string }[]): SeatState {
+function stateWith(transcript: { seq: number; kind: string; text: string; imageUrl?: string }[]): SeatState {
   return {
     status: 'running',
     phaseDone: false,
@@ -35,7 +35,7 @@ function stateWith(transcript: { seq: number; kind: string; text: string }[]): S
       publicClues: [],
       ownFacts: [],
       items: [],
-      transcript: transcript.map((l) => ({ seq: l.seq, kind: l.kind, text: l.text, at: '', seatId: '', roleId: '', speaker: '' })),
+      transcript: transcript.map((l) => ({ seq: l.seq, kind: l.kind, text: l.text, imageUrl: l.imageUrl ?? '', at: '', seatId: '', roleId: '', speaker: '' })),
       cardRoles: [],
       seats: [],
       hostExtraLeft: 0,
@@ -101,6 +101,13 @@ describe('transcript folding', () => {
     const merged = mergeWithState(lines, stateWith([{ seq: 1, kind: 'dm', text: '开场' }, { seq: 2, kind: 'speech', text: '补回来的历史' }]))
     expect(merged.filter((l) => !l.streaming).map((l) => l.seq)).toEqual([1, 2])
     expect(merged[merged.length - 1].streaming).toBe(true)
+  })
+
+  it('keeps a clue picture on live lines and snapshot lines', () => {
+    const live = applyEvent([], ev({ type: 'clue.revealed', seq: 2, text: '公开了线索', meta: { imageUrl: '/img/photo.png' } }))
+    expect(live[0].imageUrl).toBe('/img/photo.png')
+    const merged = mergeWithState(live, stateWith([{ seq: 2, kind: 'clue.revealed', text: '公开了线索', imageUrl: '/img/photo.png' }]))
+    expect(merged[0].imageUrl).toBe('/img/photo.png')
   })
 
   it('labels every known event kind', () => {

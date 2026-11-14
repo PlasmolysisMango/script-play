@@ -171,7 +171,7 @@ func TestVisibilityGolden(t *testing.T) {
 			OwnClues:    []string{"c2", "c3"},
 			PublicClues: []string{"c1", "c4"},
 			OwnFacts:    []string{"f2", "f3"},
-			Transcript:  []int{1, 2, 3, 5},
+			Transcript:  []int{1, 2, 3, 4, 5},
 			PublicRoles: 3, Seats: 4,
 		},
 		"seat3": {

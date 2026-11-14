@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef } from 'react'
 import { InlineRuns } from '../../components/Markdown'
 import { parseRichText } from '../../lib/richtext'
 import type { OwnRole } from '../../types/schema'
@@ -12,8 +12,72 @@ import type { OwnRole } from '../../types/schema'
  * printed book: section headings, `**bold**` emphasis the author used to mark
  * what must not be missed, the ship map, and diary entries aligned by clock.
  */
-export function ReadingPage({ role, onClose }: { role: OwnRole; onClose: () => void }) {
+export function ReadingPage({
+  role,
+  onClose,
+  storageKey,
+}: {
+  role: OwnRole
+  onClose: () => void
+  /** Per-game/per-seat row key for "remember where I stopped reading". */
+  storageKey?: string
+}) {
   const blocks = useMemo(() => parseRichText(role.private.script), [role.private.script])
+  const scrollRef = useRef<HTMLDivElement | null>(null)
+  const savedTop = useRef<number | null>(null)
+  const saveTimer = useRef<number | null>(null)
+  const userMoved = useRef(false)
+
+  const persist = useCallback(() => {
+    const el = scrollRef.current
+    if (!el || !storageKey) return
+    try {
+      localStorage.setItem(storageKey, String(Math.max(0, Math.round(el.scrollTop))))
+    } catch {
+      // Private mode can refuse storage; reading still works, it just forgets.
+    }
+  }, [storageKey])
+
+  const restore = useCallback(() => {
+    const el = scrollRef.current
+    if (!el || savedTop.current === null || userMoved.current) return
+    el.scrollTop = savedTop.current
+  }, [])
+
+  // Images above the saved position change the document height after mount.
+  // Retrying for a short window (and again on every image load) lands the
+  // reader back on the same paragraph instead of clamping to a half-loaded page.
+  useLayoutEffect(() => {
+    savedTop.current = null
+    userMoved.current = false
+    let timers: number[] = []
+    if (storageKey) {
+      try {
+        const raw = localStorage.getItem(storageKey)
+        const n = raw === null ? NaN : Number(raw)
+        if (Number.isFinite(n) && n > 0) savedTop.current = n
+      } catch {
+        savedTop.current = null
+      }
+    }
+    if (savedTop.current !== null) {
+      timers = [0, 120, 350, 800, 1500].map((ms) => window.setTimeout(restore, ms))
+    }
+    return () => {
+      timers.forEach((id) => window.clearTimeout(id))
+      if (saveTimer.current !== null) window.clearTimeout(saveTimer.current)
+      saveTimer.current = null
+      persist()
+    }
+  }, [storageKey, restore, persist])
+
+  const onScroll = () => {
+    if (saveTimer.current !== null) return
+    saveTimer.current = window.setTimeout(() => {
+      saveTimer.current = null
+      persist()
+    }, 200)
+  }
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -34,7 +98,14 @@ export function ReadingPage({ role, onClose }: { role: OwnRole; onClose: () => v
     // through the last lines, and "it covers the page you are reading" is the
     // worst possible failure for this screen.
     <div className="fixed inset-0 z-40 flex flex-col bg-page/95 backdrop-blur-sm" role="dialog" aria-modal="true">
-      <div className="scroll-thin min-h-0 flex-1 overflow-y-auto overscroll-contain">
+      <div
+        ref={scrollRef}
+        className="scroll-thin min-h-0 flex-1 overflow-y-auto overscroll-contain"
+        onScroll={onScroll}
+        onWheel={() => { userMoved.current = true }}
+        onTouchMove={() => { userMoved.current = true }}
+        onKeyDown={() => { userMoved.current = true }}
+      >
         <div className="mx-auto max-w-3xl px-4 pb-6 pt-3 sm:px-6 sm:pb-16 sm:pt-4">
           <div className="sticky top-0 z-10 -mx-4 mb-5 flex items-start justify-between gap-3 border-b border-line/70 bg-page/90 px-4 py-2.5 backdrop-blur sm:-mx-6 sm:mb-6 sm:px-6 sm:py-3">
             <div className="min-w-0">
@@ -90,6 +161,7 @@ export function ReadingPage({ role, onClose }: { role: OwnRole; onClose: () => v
                         src={b.src}
                         alt={b.alt}
                         decoding="async"
+                        onLoad={restore}
                         className="mx-auto block h-auto w-full rounded-xl border border-line/60 bg-panel"
                       />
                     </a>

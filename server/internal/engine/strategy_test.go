@@ -213,6 +213,60 @@ func TestRandomOrderShufflesPlayers(t *testing.T) {
 	}
 }
 
+// When the named role is played by an agent, the captain cannot press
+// 「确定顺序」: the panel must fall back to the host instead of parking the
+// phase on a seat that can never submit an order.
+func TestRoleAssignedAgentCaptainFallsBackToHost(t *testing.T) {
+	sc := fixtureScript()
+	sc.Phases[1].Order = domain.OrderRoleAssigned
+	sc.Phases[1].OrderRoleID = "r2"
+	g := domain.NewGame("g1", "room1", "sc1", nil)
+	players := strategySeats("seat1", "seat2", "seat3")
+	for i := range players {
+		players[i].IsHost = false
+	}
+	players[1].Kind = domain.SeatAgent
+	players[1].ModelID = "talk/test"
+	host := domain.Seat{
+		ID:          "seat0",
+		RoomID:      "room1",
+		Kind:        domain.SeatSpectator,
+		DisplayName: "主持人",
+		Connected:   true,
+		IsHost:      true,
+		JoinedAt:    time.Now(),
+	}
+	g.Seats = append([]domain.Seat{host}, players...)
+
+	actor := NewActor(g, sc, nil, nil, nil, ActorConfig{
+		FloorTimeout: 5 * time.Second,
+		AgentTimeout: 2 * time.Second,
+		AutoAdvance:  true,
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	go actor.Start(ctx)
+
+	waitFor(t, 5*time.Second, func() bool {
+		st, ok := actor.StateForSeat("seat0")
+		return ok && st.Prompt != nil && st.Prompt.Kind == "order"
+	})
+	for _, id := range []string{"seat1", "seat2", "seat3"} {
+		st, ok := actor.StateForSeat(id)
+		if !ok {
+			t.Fatalf("%s state missing", id)
+		}
+		if st.Prompt != nil {
+			t.Fatalf("%s received the order prompt, want the host's fallback", id)
+		}
+	}
+
+	if err := actor.Handle(ctx, "seat0", ClientMessage{Type: "order.set", SeatIDs: []string{"seat1", "seat2", "seat3"}}); err != nil {
+		t.Fatalf("order.set: %v", err)
+	}
+	waitEvent(t, actor, "", "本阶段顺序（主持人指定）")
+}
+
 func drawnBy(g domain.Game, seatID string) int {
 	n := 0
 	for _, ev := range g.Events {

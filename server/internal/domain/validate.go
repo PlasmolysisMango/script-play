@@ -299,7 +299,7 @@ func (s *Script) Validate() []ValidationError {
 			phaseByID[ph.ID] = &s.Phases[i]
 		}
 		switch ph.Type {
-		case PhaseReading, PhaseOpening, PhaseSearch, PhaseDiscussion, PhaseVote, PhaseReveal, PhasePlay, PhaseScore:
+		case PhaseReading, PhaseOpening, PhaseSearch, PhaseDiscussion, PhaseDice, PhaseVote, PhaseReveal, PhasePlay, PhaseScore:
 		case "":
 			add(p+".type", "阶段类型不能为空")
 		default:
@@ -363,6 +363,48 @@ func (s *Script) Validate() []ValidationError {
 		}
 		if ph.Type == PhaseDiscussion && ph.SpeechPerPlayer <= 0 {
 			add(p+".speechPerPlayer", "讨论阶段每人发言次数必须大于 0")
+		}
+		if ph.Type == PhaseDice {
+			if ph.Dice == nil {
+				add(p+".dice", "骰子提问阶段需要 dice 规则")
+			} else {
+				if ph.Dice.Rounds <= 0 {
+					add(p+".dice.rounds", "骰子提问轮数必须大于 0")
+				}
+				if ph.Dice.Sides < 0 {
+					add(p+".dice.sides", "骰子面数不能为负")
+				}
+				for rid := range ph.Dice.TieBreak {
+					if !roleIDs[rid] {
+						add(p+".dice.tieBreak", "未知角色：%s", rid)
+					}
+				}
+				for rid, cards := range ph.Dice.Questions {
+					if !roleIDs[rid] {
+						add(p+".dice.questions", "未知角色：%s", rid)
+					}
+					if len(cards) == 0 {
+						add(p+".dice.questions", "角色 %s 没有问题卡", rid)
+					}
+					for j, text := range cards {
+						if strings.TrimSpace(text) == "" {
+							add(fmt.Sprintf("%s.dice.questions[%s][%d]", p, rid, j), "问题卡不能为空")
+						}
+					}
+				}
+				for rid, words := range ph.Dice.Keywords {
+					if !roleIDs[rid] {
+						add(p+".dice.keywords", "未知角色：%s", rid)
+					}
+					for word, answer := range words {
+						if strings.TrimSpace(word) == "" || strings.TrimSpace(answer) == "" {
+							add(p+".dice.keywords", "角色 %s 的关键词和必答内容都不能为空", rid)
+						}
+					}
+				}
+			}
+		} else if ph.Dice != nil {
+			add(p+".dice", "只有 dice 阶段用得上 dice 规则")
 		}
 		switch ph.Order {
 		case "", OrderRoundRobin, OrderRandom, OrderHostAssigned, OrderRoleAssigned, OrderFixed, OrderFavor:
@@ -435,6 +477,21 @@ func (s *Script) Validate() []ValidationError {
 			}
 		}
 	}
+	for i := range s.Roles {
+		for lineNo, line := range strings.Split(s.Roles[i].Private.Script, "\n") {
+			id, ok := ReadHoldPhaseID(line)
+			if ok {
+				if phaseByID[id] == nil {
+					add(fmt.Sprintf("roles[%d].private.script", i), "阅读锁引用了未知阶段：第 %d 行 %s", lineNo+1, id)
+				}
+				continue
+			}
+			if LooksLikeReadHold(line) && !IsReadHoldEnd(line) {
+				add(fmt.Sprintf("roles[%d].private.script", i), "阅读锁格式错误：第 %d 行应写成 <!-- read-hold:阶段id -->", lineNo+1)
+			}
+		}
+	}
+
 	if !hasReveal {
 		add("phases", "必须包含一个 reveal 阶段")
 	}

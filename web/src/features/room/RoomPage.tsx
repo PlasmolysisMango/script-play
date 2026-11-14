@@ -31,7 +31,7 @@ export function RoomPage({ code }: { code: string }) {
   const onError = (err: unknown) => notify(err instanceof ApiError ? err.message : String(err), 'error')
 
   const join = useMutation({
-    mutationFn: (body: { displayName?: string; roleId?: string; personaId?: string; spectator?: boolean }) =>
+    mutationFn: (body: { displayName?: string; roleId?: string; spectator?: boolean }) =>
       api.joinRoom(code, body),
     onSuccess: (next) => {
       applyRoom(next)
@@ -240,7 +240,6 @@ export function RoomPage({ code }: { code: string }) {
       <aside className="space-y-5">
         {!room.mySeatId ? (
           <JoinCard
-            personas={personas}
             freeRoles={freeRoles}
             allowSpectator={room.allowSpectator}
             lobby={room.status === 'lobby'}
@@ -510,22 +509,19 @@ function AddAgentForm({
 
 function JoinCard({
   freeRoles,
-  personas,
   allowSpectator,
   lobby,
   busy,
   onJoin,
 }: {
   freeRoles: { id: string; name: string; intro: string }[]
-  personas: { id: string; name: string }[]
   allowSpectator: boolean
   lobby: boolean
   busy: boolean
-  onJoin: (body: { displayName?: string; roleId?: string; personaId?: string; spectator?: boolean }) => void
+  onJoin: (body: { displayName?: string; roleId?: string; spectator?: boolean }) => void
 }) {
   const [name, setName] = useState('')
   const [roleId, setRoleId] = useState('')
-  const [personaId, setPersonaId] = useState(personas[0]?.id ?? '')
 
   return (
     <div className="card space-y-3">
@@ -545,15 +541,6 @@ function JoinCard({
               ))}
             </select>
           </Field>
-          <Field label="发言性格" hint="真人席位复用同一套性格提示，方便复盘">
-            <select className="input" value={personaId} onChange={(e) => setPersonaId(e.target.value)}>
-              {personas.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                </option>
-              ))}
-            </select>
-          </Field>
         </>
       ) : null}
       <button
@@ -564,7 +551,6 @@ function JoinCard({
           onJoin({
             displayName: name.trim() || undefined,
             roleId: roleId || undefined,
-            personaId: personaId || undefined,
             spectator: !lobby,
           })
         }

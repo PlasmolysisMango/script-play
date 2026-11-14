@@ -268,7 +268,7 @@ export const api = {
   },
   async joinRoom(
     code: string,
-    body: { displayName?: string; roleId?: string; personaId?: string; spectator?: boolean },
+    body: { displayName?: string; roleId?: string; spectator?: boolean },
   ): Promise<Room> {
     return withRoom(await request(`/api/rooms/${code}/join`, { method: 'POST', body: JSON.stringify(body) }))
   },

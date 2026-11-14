@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"script-play/internal/domain"
+	"script-play/internal/llm"
 )
 
 // talkTable builds a three-human table parked on the discussion phase, with the
@@ -248,6 +249,82 @@ func TestReplyMovesTheAnsweredSeatToTheFront(t *testing.T) {
 		f := floorOf(a, "seat2")
 		return f != nil && f.SeatID == "seat2" && f.Kind == SlotReply && f.ReplyTo == "seat1"
 	})
+}
+
+// A human question is not an agent's voluntary interjection. Once an agent has
+// spent its per-phase chatter budget, clicking 「回应」 or naming it must still
+// produce an answer instead of silently dropping the turn.
+type talkProvider struct{}
+
+func (talkProvider) Name() string { return "talk" }
+
+func (talkProvider) Stream(_ context.Context, _ llm.Request, sink func(string) error) error {
+	return sink(`{"tool":"speak","text":"我先解释时间线。"}`)
+}
+
+func TestHumanQuestionReachesAgentAfterChatterBudget(t *testing.T) {
+	sc := fixtureScript()
+	sc.Phases = []domain.Phase{{
+		ID: "p1", Type: domain.PhaseDiscussion, Name: "公聊",
+		SpeechPerPlayer: 1, Order: domain.OrderRoundRobin,
+	}}
+	g := domain.NewGame("g1", "room1", "sc1", nil)
+	g.Seats = []domain.Seat{
+		{ID: "seat1", RoomID: "room1", RoleID: "r1", Kind: domain.SeatHuman, DisplayName: "玩家一", IsHost: true, Connected: true, JoinedAt: time.Now()},
+		{ID: "seat2", RoomID: "room1", RoleID: "r2", Kind: domain.SeatAgent, DisplayName: "AI 陆沉", PersonaID: "guarded", ModelID: "talk/test", Connected: true, JoinedAt: time.Now()},
+		{ID: "seat3", RoomID: "room1", RoleID: "r3", Kind: domain.SeatHuman, DisplayName: "玩家三", Connected: true, JoinedAt: time.Now()},
+	}
+	reg := llm.NewRegistry("talk", 2)
+	reg.Register(talkProvider{})
+	a := NewActor(g, sc, reg, nil, nil, ActorConfig{
+		FloorTimeout: 150 * time.Millisecond,
+		AgentTimeout: 2 * time.Second,
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	go a.Start(ctx)
+
+	waitFor(t, 8*time.Second, func() bool {
+		st, ok := a.StateForSeat("seat1")
+		return ok && st.TalkOpen
+	})
+	a.mu.Lock()
+	ph := a.m.Current(a.g)
+	a.talkBudget["seat2"] = a.talkLimitLocked(ph)
+	a.mu.Unlock()
+
+	speeches := func() int {
+		n := 0
+		for _, ev := range a.Snapshot().Events {
+			if ev.Type == domain.EvSpeech && ev.SeatID == "seat2" {
+				n++
+			}
+		}
+		return n
+	}
+	before := speeches()
+	waitSpeech := func(label string) {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			if speeches() > before {
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		snap := a.Snapshot()
+		st, _ := a.StateForSeat("seat2")
+		t.Fatalf("%s: seat2 did not answer; budget=%d queue=%+v floor=%+v last events=%+v",
+			label, a.talkBudget["seat2"], st.Queue, st.Floor, snap.Events[maxInt(0, len(snap.Events)-8):])
+	}
+
+	mustHandle(t, a, "seat1", ClientMessage{Type: "speak.text", Text: "陆沉，你怎么解释？", ReplyTo: "seat2"})
+	waitSpeech("reply button")
+
+	// Mentioning the role name without clicking 回应 takes the same direct path.
+	before = speeches()
+	mustHandle(t, a, "seat1", ClientMessage{Type: "speak.text", Text: "陆沉，你还没回答我。"})
+	waitSpeech("role name mention")
 }
 
 // Declining is a normal move: the floor moves on and others may speak.

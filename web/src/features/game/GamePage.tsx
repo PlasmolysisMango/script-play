@@ -10,8 +10,10 @@ import { ReadingPage } from './ReadingPage'
 import { CardTable } from './CardTable'
 import { narrationFor, probeVoices, speak, stopSpeaking, warmVoices, type VoiceCapabilities } from '../../voice'
 import { useVoiceCapabilities } from '../../lib/useVoice'
-import type { GameEvent, SeatState, SpeechSlot, TurnOption, TurnPrompt, Visible } from '../../types/schema'
+import type { DiceView, GameEvent, SeatState, SpeechSlot, TurnOption, TurnPrompt, Visible } from '../../types/schema'
 
+/** A transcript line with an inline picture is rendered as script prose. */
+const MARKDOWN_IMAGE = /!\[[^\]]*\]\([^)\s]+\)/
 /** One command frame. `replyTo` makes a line an answer to a specific seat. */
 type SendCmd = {
   type: string
@@ -41,6 +43,7 @@ const REFRESH_EVENTS = new Set([
   'clue.revealed',
   'vote',
   'vote.result',
+  'dice',
   'reveal',
   'seat.updated',
   'system',
@@ -89,6 +92,10 @@ export function GamePage({ code }: { code: string }) {
   const isHost = state?.visible.self.isHost ?? false
   const phase = state?.visible.phase
   const floorMine = !!state?.floor && state.floor.seatId === seatId
+  // 骰子阶段只有提问方和回答方需要发言；其余时间把输入框锁住，免得发出
+  // 引擎必然拒绝的指令。
+  const diceTurn = !!state?.dice && (state.dice.needAsk || state.dice.needAnswer)
+  const canType = !state?.dice || diceTurn
   // Private talk only exists while the table is discussing: a whisper during
   // search or voting would be a hole in the flow the engine rejects anyway.
   const canWhisper = !!state && state.status === 'running' && phase?.type === 'discussion' && !isSpectator
@@ -197,6 +204,7 @@ export function GamePage({ code }: { code: string }) {
   }, [canWhisper, whisperTo])
 
   const submitSpeech = () => {
+    if (!canType) return
     const text = draft.trim()
     if (!text) return
     // A private line has its own frame: it must not consume the floor, and the
@@ -244,7 +252,7 @@ export function GamePage({ code }: { code: string }) {
 
       {/* On a phone the table comes first and the side panels follow it, so the
           transcript is not pushed below a screenful of role book. */}
-      <section className="card order-1 flex max-h-[85vh] min-h-[60vh] flex-col xl:order-none xl:max-h-none xl:min-h-[70vh]">
+      <section className="card order-1 flex h-[calc(100dvh-6rem)] min-h-0 flex-col sm:h-auto sm:max-h-[85vh] sm:min-h-[60vh] xl:order-none xl:max-h-none xl:min-h-[70vh]">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2">
             <span className="font-mono text-sm tracking-widest text-accent">{room.code}</span>
@@ -307,6 +315,10 @@ export function GamePage({ code }: { code: string }) {
           </div>
         ) : null}
 
+        {state.dice ? (
+          <DicePanel dice={state.dice} visible={state.visible} seatId={seatId} phaseDone={state.phaseDone} send={send} />
+        ) : null}
+
         <Transcript
           lines={lines}
           selfSeatId={seatId}
@@ -330,7 +342,7 @@ export function GamePage({ code }: { code: string }) {
           </div>
         ) : null}
 
-        {isHost && state.status === 'running' && state.prompt?.kind === 'order' ? (
+        {state.status === 'running' && state.prompt?.kind === 'order' ? (
           <div className="mt-3 border-t border-line/60 pt-3">
             <OrderPanel prompt={state.prompt} send={send} />
           </div>
@@ -395,17 +407,25 @@ export function GamePage({ code }: { code: string }) {
             ) : null}
             <div className="flex items-end gap-2">
               <textarea
-                className="input min-h-[64px] resize-none"
+                rows={1}
+                className="input max-h-40 min-h-11 resize-none sm:min-h-[64px]"
                 placeholder={
-                  whisperTo
-                    ? `只给 ${seatName(state.visible, whisperTo)} 看：不占麦，也不进公共发言记录`
-                    : floorMine
-                      ? '轮到你了，说点什么…'
-                      : state.talkOpen
-                        ? '自由讨论中：可以直接说完，也可以先排队等麦克风'
-                        : '随时可以补充发言'
+                  state.dice
+                    ? state.dice.needAsk
+                      ? '输入你想问的问题，或点上方的问题卡…'
+                      : state.dice.needAnswer
+                        ? '输入你的回答，发送即算作答…'
+                        : '现在轮到别人，先等一下…'
+                    : whisperTo
+                      ? `只给 ${seatName(state.visible, whisperTo)} 看：不占麦，也不进公共发言记录`
+                      : floorMine
+                        ? '轮到你了，说点什么…'
+                        : state.talkOpen
+                          ? '自由讨论中：可以直接说完，也可以先排队等麦克风'
+                          : '随时可以补充发言'
                 }
                 value={draft}
+                disabled={!canType}
                 onChange={(e) => setDraft(e.target.value)}
                 onKeyDown={(e) => {
                   // Enter sends, Shift+Enter keeps the newline: this is a chat box
@@ -417,7 +437,7 @@ export function GamePage({ code }: { code: string }) {
                 }}
               />
               <div className="flex flex-col gap-2">
-                <button type="button" className="btn-primary" onClick={submitSpeech} disabled={!draft.trim()}>
+                <button type="button" className="btn-primary" onClick={submitSpeech} disabled={!draft.trim() || !canType}>
                   {whisperTo ? '私聊' : '发送'}
                 </button>
               </div>
@@ -497,7 +517,166 @@ export function GamePage({ code }: { code: string }) {
       </aside>
 
       {reading && state.visible.ownRole ? (
-        <ReadingPage role={state.visible.ownRole} onClose={() => setReading(false)} />
+        <ReadingPage
+          role={state.visible.ownRole}
+          storageKey={`script-play.reading.${state.visible.gameId}:${seatId || 'viewer'}`}
+          onClose={() => setReading(false)}
+        />
+      ) : null}
+    </div>
+  )
+}
+
+/**
+ * 骰子提问的桌面（K13）。点数由服务端掷出，客户端只负责显示和发指令；
+ * 问题卡只下发给提问方，必答内容只下发给回答方。
+ */
+function DicePanel({
+  dice,
+  visible,
+  seatId,
+  phaseDone,
+  send,
+}: {
+  dice: DiceView
+  visible: Visible
+  seatId: string
+  phaseDone: boolean
+  send: (cmd: SendCmd) => boolean
+}) {
+  const asker = dice.askerSeatId ? seatName(visible, dice.askerSeatId) : ''
+  const target = dice.targetSeatId ? seatName(visible, dice.targetSeatId) : ''
+  const players = (visible.seats ?? []).filter((s) => s.kind !== 'spectator')
+  const stageLabel =
+    dice.stage === 'rolling'
+      ? '掷骰中'
+      : dice.stage === 'asking'
+        ? '提问中'
+        : dice.stage === 'answering'
+          ? '回答中'
+          : dice.stage === 'done'
+            ? '本轮结束'
+            : '准备中'
+  return (
+    <div className="mt-3 rounded-xl border border-accent/30 bg-accent/5 p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-sm text-strong">
+          骰子提问
+          {dice.rounds > 0 ? (
+            <span className="ml-1 text-xs text-slate-400">
+              第 {dice.round} / {dice.rounds} 轮
+            </span>
+          ) : null}
+        </p>
+        <Tag tone={dice.needRoll || dice.needAsk || dice.needAnswer ? 'green' : 'slate'}>{stageLabel}</Tag>
+      </div>
+
+      <div className="mt-2 grid gap-2 sm:grid-cols-3">
+        {players.map((s) => {
+          const roll = dice.rolls.find((r) => r.seatId === s.id)
+          const marks = [
+            s.id === dice.askerSeatId ? '提问' : '',
+            s.id === dice.targetSeatId ? '回答' : '',
+          ].filter(Boolean)
+          return (
+            <div
+              key={s.id}
+              className={`rounded-lg border px-2 py-1.5 text-xs ${
+                s.id === dice.askerSeatId
+                  ? 'border-amber-400/50 bg-amber-500/10 text-amber-100'
+                  : s.id === dice.targetSeatId
+                    ? 'border-sky-400/50 bg-sky-500/10 text-sky-100'
+                    : 'border-line/60 text-slate-300'
+              }`}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <span className="truncate">
+                  {s.roleName || s.displayName}
+                  {s.id === seatId ? '（我）' : ''}
+                </span>
+                <span className="font-mono text-base text-strong">{roll ? roll.value : '—'}</span>
+              </div>
+              <div className="mt-0.5 flex min-h-[1rem] items-center gap-1 text-[10px] text-slate-400">
+                {roll?.bonus ? <span>同点 +{roll.bonus}</span> : null}
+                {marks.length > 0 ? <span>{marks.join(' · ')}</span> : null}
+                {!roll ? <span>待掷骰</span> : null}
+              </div>
+            </div>
+          )
+        })}
+      </div>
+
+      {dice.stage === 'rolling' ? (
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          {dice.needRoll ? (
+            <button type="button" className="btn-primary text-xs" onClick={() => send({ type: 'dice.roll' })}>
+              掷骰子
+            </button>
+          ) : (
+            <p className="text-xs text-slate-400">已掷骰，等待其他玩家…</p>
+          )}
+        </div>
+      ) : null}
+
+      {dice.stage === 'asking' ? (
+        <div className="mt-3 space-y-2">
+          {dice.needAsk ? (
+            <>
+              <p className="text-xs text-slate-300">你点数最大，选一张问题卡问 {target}：</p>
+              <div className="grid gap-1.5">
+                {dice.choices.map((q) => (
+                  <button
+                    key={q}
+                    type="button"
+                    className="rounded-lg border border-line/70 px-2 py-1.5 text-left text-xs text-slate-200 hover:border-accent/60 hover:text-strong"
+                    onClick={() => send({ type: 'dice.ask', text: q })}
+                  >
+                    {q}
+                  </button>
+                ))}
+              </div>
+              <p className="text-[11px] text-slate-500">也可以直接在下方发言框输入自己的问题。</p>
+            </>
+          ) : (
+            <p className="text-xs text-slate-400">等待 {asker || '提问方'} 选择问题…</p>
+          )}
+        </div>
+      ) : null}
+
+      {dice.stage === 'answering' ? (
+        <div className="mt-3 space-y-2">
+          <p className="text-xs text-slate-300">
+            {asker} 问 {target}：
+          </p>
+          <p className="rounded-lg border border-line/60 bg-ink/40 px-2 py-1.5 text-sm text-slate-200">
+            {dice.question || '……'}
+          </p>
+          {dice.needAnswer ? (
+            <>
+              {dice.required.length > 0 ? (
+                <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 px-2 py-1.5 text-[11px] text-amber-100">
+                  <p className="mb-1">你的关键词被问到了，回答里必须包含：</p>
+                  <ul className="list-disc space-y-0.5 pl-4">
+                    {dice.required.map((r) => (
+                      <li key={r}>{r}</li>
+                    ))}
+                  </ul>
+                </div>
+              ) : (
+                <p className="text-[11px] text-slate-500">问题里没有你的关键词，可以自由发挥。</p>
+              )}
+              <p className="text-xs text-slate-300">在下方发言框输入回答，发送即算作答。</p>
+            </>
+          ) : (
+            <p className="text-xs text-slate-400">等待 {target || '回答方'} 回答…</p>
+          )}
+        </div>
+      ) : null}
+
+      {dice.stage === 'done' ? (
+        <p className="mt-3 text-xs text-slate-400">
+          {phaseDone ? '骰子提问已结束，等待主持人进入下一阶段。' : '本轮结束，正在进入下一轮…'}
+        </p>
       ) : null}
     </div>
   )
@@ -602,6 +781,8 @@ function Transcript({
     <div className="scroll-thin flex-1 space-y-2 overflow-y-auto pr-1">
       {lines.length === 0 ? <Empty>对局刚开始，等待主持人开场。</Empty> : null}
       {lines.map((line, index) => {
+        // Dice markers with no text are state-refresh ticks, not table history.
+        if (line.kind === 'dice' && !line.text.trim()) return null
         const style = styleOf(line.kind)
         const tone =
           style.tone === 'phase'
@@ -638,7 +819,23 @@ function Transcript({
                 </button>
               ) : null}
             </div>
-            <p className="whitespace-pre-wrap break-words leading-relaxed">{line.text}</p>
+            {line.text ? (
+              MARKDOWN_IMAGE.test(line.text) ? (
+                <Markdown text={line.text} />
+              ) : (
+                <p className="whitespace-pre-wrap break-words leading-relaxed">{line.text}</p>
+              )
+            ) : null}
+            {line.imageUrl ? (
+              <a href={line.imageUrl} target="_blank" rel="noreferrer" className="mt-2 block">
+                <img
+                  src={line.imageUrl}
+                  alt={line.speaker ? `${line.speaker}的线索配图` : '线索配图'}
+                  loading="lazy"
+                  className="max-h-72 w-auto rounded-lg border border-line/70 bg-panel"
+                />
+              </a>
+            ) : null}
             {index === advanceAt ? (
               <button type="button" className="btn-primary mt-2 text-xs" onClick={onAdvance}>
                 进入下一阶段

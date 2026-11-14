@@ -81,6 +81,14 @@ export type Phase = {
   revealOnFind?: boolean
   /** 分类抽卡：按顺序从这些卡类里各抽几张，取代 cluePool + perPlayerPick。 */
   draws?: DrawRule[]
+  /** 骰子提问：轮数、同点加成、各角色的问题卡与必答关键词。 */
+  dice?: {
+    rounds?: number
+    sides?: number
+    tieBreak?: Record<string, number>
+    questions?: Record<string, string[]>
+    keywords?: Record<string, Record<string, string>>
+  }
 }
 
 export type Fact = { id?: string; text?: string }
@@ -156,6 +164,7 @@ export const PHASE_TYPES = [
   ['play', '出牌（卡牌本）'],
   ['score', '填积分卡（卡牌本）'],
   ['discussion', '讨论'],
+  ['dice', '骰子提问'],
   ['vote', '投票'],
   ['reveal', '揭晓'],
 ] as const

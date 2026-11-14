@@ -146,6 +146,7 @@ const (
 	EvClueRevealed = "clue.revealed"
 	EvVote         = "vote"
 	EvVoteResult   = "vote.result"
+	EvDice         = "dice"
 	EvReveal       = "reveal"
 	EvLeak         = "leak_incident"
 	EvSeat         = "seat.updated"

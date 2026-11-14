@@ -132,7 +132,7 @@ Content-Type: application/json
 | GET | `/api/rooms` | 我可见的房间（大厅全量 + 我参与的对局） |
 | POST | `/api/rooms` | `{name?, scriptId, maxSeats?, allowSpectator?, speechSeconds?, autoSkip?}` → `{room}`，创建者为房主并自动占座；`maxSeats` 留空取剧本 `playerCount.max`，人数固定（min=max）时必须等于该值，可浮动时只能落在 min~max 内，否则 400；`speechSeconds` 为 10~600（单次轮次的秒数）、0（服务端默认，见 `/api/health` 的 `floorTimeoutSec`）或 -1（不限时）；计时按「每次轮到某个座位」重新开始，搜证与投票的等待也用同一个值；`autoSkip=false` 表示超时不跳过、等主持人推进（`-1` 不产生超时，此项无意义） |
 | GET | `/api/rooms/{code}` | `{room}` |
-| POST | `/api/rooms/{code}/join` | `{displayName?, roleId?, personaId?, spectator?}`；已有座位则 `rejoined: true`；对局已开始时只能以 `spectator` 身份加入（需 `allowSpectator`） |
+| POST | `/api/rooms/{code}/join` | `{displayName?, roleId?, spectator?}`；已有座位则 `rejoined: true`；对局已开始时只能以 `spectator` 身份加入（需 `allowSpectator`）。真人座位不设性格 |
 | POST | `/api/rooms/{code}/seats` | 房主添加 AI 座位 `{roleId?, personaId?, displayName?}`；`personaId` 缺省或传 `random` 时服务端抽一个预设并落库为具体 id；`modelId` 仍可传（留空用服务端默认），但 Web 界面不再暴露模型选择 |
 | PATCH | `/api/rooms/{code}/seats/{seatId}` | 房主可改全部字段；玩家改**自己**座位只能改 `roleId/ready`（选角色 / 准备），改昵称、性格、模型返回 403；`personaId: "random"` 同样会被抽成具体预设 |
 | DELETE | `/api/rooms/{code}/seats/{seatId}` | 房主移除座位（不能移除自己；对局开始后返回 409） |
@@ -196,6 +196,7 @@ Content-Type: application/json
 | `clue.revealed` | 公开某条线索；`revealOnFind` 阶段搜到时也走这条（公开） | public |
 | `vote` | 某人投票 | public（票面角色名） |
 | `vote.result` | 计票结果 | public |
+| `dice` | 骰子提问的轮次/点数/阶段变化；空 `text` 表示只让客户端刷新状态 | public |
 | `reveal` | 复盘真相 | public（仅在 reveal 阶段后） |
 | `leak_incident` | 泄密检查和处置记录 | `dm`（仅房主） |
 
@@ -213,6 +214,9 @@ Content-Type: application/json
 { "type": "clue.reveal", "clueId": "c1" }
 { "type": "whisper.send", "to": "seat_b", "text": "钳子是我拿的" }  // 私聊，只在讨论段可用
 { "type": "vote.cast", "roleId": "r3" }
+{ "type": "dice.roll" }                        // 骰子提问：轮到自己时掷骰（点数由服务端生成）
+{ "type": "dice.ask", "text": "你见过那条项链吗？" }  // 点数最大的人选问题卡提问；也可以直接发 speak.text
+{ "type": "dice.answer", "text": "……" }        // 被提问的人回答；也可以直接发 speak.text
 { "type": "order.set", "seatIds": ["seat_a", "seat_b"] }  // 定序：必须是本阶段可行动角色的一个排列（主持人或 order=role_assigned 指定的角色）
 { "type": "host.skip" }   // 进入下一阶段（帧名保留旧名）：UI 写「进入下一阶段：X」，落盘一条主持人的 dm
 { "type": "ping" }
@@ -269,6 +273,13 @@ Content-Type: application/json
   座位不在搜证名单、额度已用完时客户端不会拿到按钮。
 - 阶段写 `order: "role_assigned"` 时，定序面板发给 `phase.orderRoleId` 对应的玩家座位，而不是房间主持人；
   该角色不在座时退回主持人。
+- `phase.type: "dice"` 是骰子提问（K13）：`dice.rounds` 轮内每轮由服务端为所有玩家座位掷骰，
+  点数最大的人向点数最小的人提问。`dice.tieBreak` 只在同点时参与比较（K13：罗素 +3、安安 +2、李斯楠 +1），
+  不会让同点的 5+3 反超单独的 6。提问方从 `dice.questions[自己的角色]` 里选一条（AI 自动选），
+  问题正文命中回答方 `dice.keywords` 里的关键词时，`SeatState.dice.required` 会列出必须说到的内容；
+  AI 回答方会把问题与必答内容一起放进模型指令。AI 的掷骰、提问和回答都由引擎自动完成。
+  `SeatState.dice` 只把 `choices` 下发给提问方、`required` 下发给回答方；其余座位只看到公开点数、
+  提问方、回答方和问题正文。阶段走完 `dice.rounds` 轮后由主持人进入下一阶段。
 - 阶段写 `order: "fixed"` 时顺序完全照 `phase.orderRoleIds` 走，不洗牌也不等主持人；
   写进名单的座位若不在房间里属于剧本错误，校验闸门会拒。
 - `role.skill` 是一局一次的特殊技能，`skill.use` 在**任意搜证阶段**都能发（不必轮到自己，也不占回合），
@@ -379,6 +390,14 @@ Content-Type: application/json
   "prompt": {                                          // 仅主持人：引擎正在等他做什么
     "kind": "order", "phaseId": "p3", "text": "…",
     "seats": [{ "seatId", "role", "display", "kind" }]
+  },
+  "dice": {                                            // 骰子提问阶段；其余阶段为空
+    "round": 3, "rounds": 20, "sides": 6, "stage": "rolling|asking|answering|done",
+    "rolls": [{ "seatId", "roleId", "speaker", "value", "bonus" }],
+    "askerSeatId", "targetSeatId", "question",
+    "choices": ["…"],                                  // 仅提问方：自己的问题卡
+    "required": ["…"],                                 // 仅回答方：关键词对应的必答内容
+    "needRoll", "needAsk", "needAnswer"
   }
 }
 ```

@@ -308,7 +308,6 @@ func (s *Server) handleCreateRoom(w http.ResponseWriter, r *http.Request) {
 		Kind:        kind,
 		UserID:      u.ID,
 		DisplayName: u.DisplayName,
-		PersonaID:   "guarded",
 		IsHost:      true,
 		Connected:   true,
 		JoinedAt:    time.Now().UTC(),
@@ -357,7 +356,6 @@ func (s *Server) handleJoinRoom(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		DisplayName string `json:"displayName"`
 		RoleID      string `json:"roleId"`
-		PersonaID   string `json:"personaId"`
 		Spectator   bool   `json:"spectator"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&req)
@@ -396,7 +394,6 @@ func (s *Server) handleJoinRoom(w http.ResponseWriter, r *http.Request) {
 		Kind:        kind,
 		UserID:      u.ID,
 		DisplayName: req.DisplayName,
-		PersonaID:   req.PersonaID,
 		RoleID:      req.RoleID,
 		Connected:   true,
 	}

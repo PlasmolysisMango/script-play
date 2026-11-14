@@ -141,11 +141,12 @@ func (m *Manager) AddSeat(gameID string, seat domain.Seat) (domain.Seat, error) 
 	if seat.JoinedAt.IsZero() {
 		seat.JoinedAt = time.Now().UTC()
 	}
-	if seat.PersonaID == "" {
-		seat.PersonaID = persona.RandomID(len(g.Seats))
-	}
 	if seat.Kind == "" {
 		seat.Kind = domain.SeatHuman
+	}
+	// Personas drive AI behaviour only; a human seat never needs one.
+	if seat.Kind == domain.SeatAgent && seat.PersonaID == "" {
+		seat.PersonaID = persona.RandomID(len(g.Seats))
 	}
 	if seat.RoleID != "" {
 		for _, other := range g.Seats {

@@ -9,6 +9,8 @@ export type Line = {
   seatId?: string
   roleId?: string
   text: string
+  /** Picture attached to a clue event, rendered under the line. */
+  imageUrl?: string
   at?: string
   /** Display name of the seat this line answers, when it is a reply. */
   replyTo?: string
@@ -37,6 +39,7 @@ export function lineFromEvent(ev: GameEvent): Line {
     seatId: ev.seatId ?? '',
     roleId: ev.roleId ?? '',
     text: ev.text ?? '',
+    imageUrl: ev.meta?.imageUrl ?? '',
     at: ev.at ?? '',
     replyTo: ev.meta?.replyToName ?? '',
   }
@@ -116,6 +119,7 @@ export function mergeWithState(lines: Line[], state: SeatState): Line[] {
     seatId: l.seatId,
     roleId: l.roleId,
     text: l.text,
+    imageUrl: l.imageUrl,
     at: l.at,
   }))
   const streaming = lines.filter((l) => l.streaming)
@@ -154,6 +158,8 @@ export function styleOf(kind: string): EventStyle {
       return { label: '投票', tone: 'vote' }
     case 'vote.result':
       return { label: '计票', tone: 'vote' }
+    case 'dice':
+      return { label: '掷骰', tone: 'vote' }
     case 'reveal':
       return { label: '真相', tone: 'reveal' }
     case 'leak_incident':
