@@ -187,8 +187,12 @@ func (a *Actor) freeTalk(ctx context.Context, gen int, ph *domain.Phase) {
 	// Requests typed during the scripted round stay queued: they were told they
 	// had a place in line, so dropping them here would make the table look deaf.
 	text := "进入自由讨论：想发言随时开口，同一时刻只有一个人说话；说完点「结束发言」把机会让给别人，主持人进入下一阶段时本阶段结束。"
-	if idle := a.cfg.discussIdle(); idle > 0 {
+	idle := a.cfg.discussionIdle(ph)
+	if idle > 0 {
 		text = fmt.Sprintf("进入自由讨论：想发言随时开口，同一时刻只有一个人说话；说完点「结束发言」把机会让给别人。主持人进入下一阶段时本阶段结束；连续 %d 秒无人发言会自动推进。", int(idle.Seconds()))
+	}
+	if ph.Whisper && idle > 0 {
+		text = fmt.Sprintf("进入私聊：选一个对象私下交谈，其他人看不到；主持人进入下一阶段时本阶段结束。连续 %d 秒无人私聊会自动推进。", int(idle.Seconds()))
 	}
 	a.appendLocked(domain.Event{
 		Type:    domain.EvSystem,
@@ -217,12 +221,17 @@ func (a *Actor) freeTalk(ctx context.Context, gen int, ph *domain.Phase) {
 		}
 		slot, ok := a.takeTalkSlot()
 		if !ok {
-			switch a.parkTalk(wctx, last) {
+			switch a.parkTalk(wctx, last, idle) {
 			case talkStop:
 				return
 			case talkIdle:
-				a.endIdleDiscussion(ctx, gen, ph)
+				a.endIdleDiscussion(ctx, gen, ph, idle)
 				return
+			case talkWakeUp:
+				// A whisper is table activity too: it woke us without queueing a
+				// public turn, so restart the silence window instead of closing
+				// a private conversation mid-sentence.
+				last = time.Now()
 			}
 			continue
 		}
@@ -239,8 +248,7 @@ const (
 )
 
 // parkTalk waits for the next request while the floor is idle.
-func (a *Actor) parkTalk(wctx context.Context, last time.Time) int {
-	idle := a.cfg.discussIdle()
+func (a *Actor) parkTalk(wctx context.Context, last time.Time, idle time.Duration) int {
 	if idle <= 0 {
 		select {
 		case <-wctx.Done():
@@ -267,7 +275,7 @@ func (a *Actor) parkTalk(wctx context.Context, last time.Time) int {
 
 // endIdleDiscussion closes a floor nobody used and walks on, so a silent table
 // never becomes a zombie room holding a concurrency slot.
-func (a *Actor) endIdleDiscussion(ctx context.Context, gen int, ph *domain.Phase) {
+func (a *Actor) endIdleDiscussion(ctx context.Context, gen int, ph *domain.Phase, idle time.Duration) {
 	a.mu.Lock()
 	if a.finished || gen != a.phaseGen {
 		a.mu.Unlock()
@@ -276,10 +284,14 @@ func (a *Actor) endIdleDiscussion(ctx context.Context, gen int, ph *domain.Phase
 	a.talkOpen = false
 	a.floor = nil
 	a.talkQueue = nil
+	text := fmt.Sprintf("连续 %d 秒无人发言，本阶段自动结束", int(idle.Seconds()))
+	if ph.Whisper {
+		text = fmt.Sprintf("连续 %d 秒无人私聊，本阶段自动结束", int(idle.Seconds()))
+	}
 	a.appendLocked(domain.Event{
 		Type:    domain.EvSystem,
 		PhaseID: ph.ID,
-		Text:    fmt.Sprintf("连续 %d 秒无人发言，本阶段自动结束", int(a.cfg.discussIdle().Seconds())),
+		Text:    text,
 	})
 	a.persistLocked()
 	a.mu.Unlock()
@@ -463,6 +475,9 @@ func (a *Actor) agentTurns(ctx context.Context, gen int, seat domain.Seat, ph *d
 	if maxSteps <= 0 {
 		maxSteps = 1
 	}
+	if claimPhase(ph) {
+		a.agentClaimGranted(seat, ph)
+	}
 	// An answer owed to a human is not an unsolicited interjection: it stays
 	// legal even after the seat has spent its volunteer budget for this phase.
 	for step := 0; step < maxSteps; step++ {
@@ -554,6 +569,8 @@ func talkInstruction(ph *domain.Phase, slot SpeechSlot, replyName string, step i
 		return "你可以继续补充一句，也可以就此结束这次发言。"
 	}
 	switch {
+	case ph.Whisper && slot.Kind == SlotTurn:
+		return fmt.Sprintf("%s 是私聊阶段。挑一个最该问的人，用 whisper 私下问他；没有合适的对象再公开发言，或 pass。", ph.Name)
 	case slot.Kind == SlotTurn:
 		return fmt.Sprintf("%s 轮到你发言了。结合你已经知道的信息说出你的观点或回应刚才的质疑；没什么可说的可以选 pass。", ph.Name)
 	case slot.Kind == SlotReply && replyName != "":

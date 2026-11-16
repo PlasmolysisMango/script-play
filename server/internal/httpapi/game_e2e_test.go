@@ -40,6 +40,7 @@ type e2eEvent struct {
 type e2eState struct {
 	Status    string `json:"status"`
 	VoteCount int    `json:"voteCount"`
+	Draw      int    `json:"draw"`
 	Search    []struct {
 		ID    string `json:"id"`
 		Title string `json:"title"`
@@ -314,6 +315,7 @@ func runFullGame(t *testing.T, provider string, floor, agent, timeout time.Durat
 		select {
 		case ev, ok := <-events:
 			if !ok {
+				t.Logf("event stream closed; last state=%+v", host.state(code))
 				finished = true
 				break
 			}
@@ -321,11 +323,18 @@ func runFullGame(t *testing.T, provider string, floor, agent, timeout time.Durat
 			switch ev.Type {
 			case "system":
 				switch {
-				case strings.Contains(ev.Text, "轮到你搜证"):
+				case strings.Contains(ev.Text, "轮到你搜证") || (strings.Contains(ev.Text, "还剩") && strings.Contains(ev.Text, "次搜证")):
 					st := host.state(code)
 					if len(st.Search) == 0 {
-						// Nothing left this seat may take; the phase timer will
-						// move the game on, so just wait.
+						// Random search hides the titles; draw instead of waiting on a
+						// clock that no longer skips a connected host. A seat with
+						// nothing left at all hands the phase to the next beat.
+						if st.Draw > 0 {
+							send(map[string]string{"type": "search.draw"})
+							picksInPhs[st.Visible.Phase.ID]++
+						} else {
+							send(map[string]string{"type": "host.skip", "phaseId": st.Visible.Phase.ID})
+						}
 						continue
 					}
 					send(map[string]string{"type": "search.clue", "clueId": st.Search[0].ID})
@@ -341,7 +350,7 @@ func runFullGame(t *testing.T, provider string, floor, agent, timeout time.Durat
 					}
 					spoken[phaseID] = true
 					send(map[string]string{"type": "speak.text", "text": "我先说：那十分钟里我在塔下，只听到灯灭的声音。你怎么解释你手上的机油？"})
-				case strings.Contains(ev.Text, "投票阶段"):
+				case strings.Contains(ev.Text, "投票") || strings.Contains(ev.Text, "指认"):
 					st := host.state(code)
 					target := ""
 					for _, s := range st.Visible.Seats {
@@ -391,7 +400,8 @@ func runFullGame(t *testing.T, provider string, floor, agent, timeout time.Durat
 assertions:
 	final := host.state(code)
 	if final.Status != "finished" {
-		t.Fatalf("status = %q want finished", final.Status)
+		t.Fatalf("status = %q want finished; last phase=%+v draw=%d search=%d last events=%+v",
+			final.Status, final.Visible.Phase, final.Draw, len(final.Search), final.Visible.Transcript[max(0, len(final.Visible.Transcript)-5):])
 	}
 	for _, p := range final.Phases {
 		if p.Status != "done" {

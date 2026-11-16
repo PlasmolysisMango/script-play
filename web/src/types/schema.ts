@@ -91,6 +91,8 @@ export const publicSeatSchema = z.object({
   isHost: z.boolean().optional().default(false),
   connected: z.boolean().optional().default(true),
   ready: z.boolean().optional().default(false),
+  // 公开的物品名（不含线索正文），用于桌上询问「钥匙在谁手里」。
+  items: z.array(z.string()).nullish().transform((v) => v ?? []),
 })
 export type PublicSeat = z.infer<typeof publicSeatSchema>
 
@@ -362,6 +364,8 @@ export const seatStateSchema = z.object({
   voted: z.boolean().optional().default(false),
   votes: z.record(z.number()).nullish().transform((v) => v ?? undefined),
   search: z.array(searchOptionSchema).nullish().transform((v) => v ?? []),
+  /** Deep-dive cards unlocked by a card in hand; claimable after the search round. */
+  claimable: z.array(searchOptionSchema).nullish().transform((v) => v ?? []),
   /** Random search mode: how many draws this seat still owes. */
   draw: z.number().optional().default(0),
   /** Seat ids in this phase's turn order, as the engine will walk them. */

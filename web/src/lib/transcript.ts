@@ -163,7 +163,7 @@ export function styleOf(kind: string): EventStyle {
     case 'reveal':
       return { label: '真相', tone: 'reveal' }
     case 'leak_incident':
-      return { label: '泄密检查', tone: 'leak' }
+      return { label: '泄密检查（仅主持人可见）', tone: 'leak' }
     default:
       return { label: '系统', tone: 'system' }
   }

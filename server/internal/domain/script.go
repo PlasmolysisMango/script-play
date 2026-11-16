@@ -135,11 +135,17 @@ type Truth struct {
 	// K28 女帝攻略 three) into per-case solutions. The flat killer fields above
 	// stay the union, because the reveal and the replay still show one verdict;
 	// Cases is what lets a vote round be checked against the case it asked.
-	Cases    []TruthCase `json:"cases,omitempty"`
-	Method   string      `json:"method,omitempty"`
-	Motive   string      `json:"motive,omitempty"`
-	Timeline []string    `json:"timeline,omitempty"`
-	Summary  string      `json:"summary,omitempty"`
+	Cases []TruthCase `json:"cases,omitempty"`
+	// Endings are alternate reveals chosen by the vote. A script that prints
+	// several endings must not dump them all at once: the reveal picks the one
+	// matching the unique accused role, and falls back to DefaultEndingID when
+	// the ballot has no majority.
+	Endings         []TruthEnding `json:"endings,omitempty"`
+	DefaultEndingID string        `json:"defaultEndingId,omitempty"`
+	Method          string        `json:"method,omitempty"`
+	Motive          string        `json:"motive,omitempty"`
+	Timeline        []string      `json:"timeline,omitempty"`
+	Summary         string        `json:"summary,omitempty"`
 }
 
 // TruthCase is one case inside a multi-case script.
@@ -155,6 +161,46 @@ type TruthCase struct {
 	KillerName    string   `json:"killerName,omitempty"`
 	Method        string   `json:"method,omitempty"`
 	Motive        string   `json:"motive,omitempty"`
+}
+
+// TruthEnding is one alternate epilogue of a multi-ending script. A non-empty
+// KillerRoleID ties it to the role the table accused; an ending without one is
+// the neutral default used when the ballot has no unique winner.
+type TruthEnding struct {
+	ID           string `json:"id"`
+	Name         string `json:"name,omitempty"`
+	KillerRoleID string `json:"killerRoleId,omitempty"`
+	Text         string `json:"text"`
+}
+
+// EndingForRole returns the ending drawn by accusing roleID.
+func (t Truth) EndingForRole(roleID string) (TruthEnding, bool) {
+	if roleID == "" {
+		return TruthEnding{}, false
+	}
+	for _, e := range t.Endings {
+		if e.KillerRoleID == roleID {
+			return e, true
+		}
+	}
+	return TruthEnding{}, false
+}
+
+// DefaultEnding returns the ending for a tied or empty ballot.
+func (t Truth) DefaultEnding() (TruthEnding, bool) {
+	if t.DefaultEndingID != "" {
+		for _, e := range t.Endings {
+			if e.ID == t.DefaultEndingID {
+				return e, true
+			}
+		}
+	}
+	for _, e := range t.Endings {
+		if e.KillerRoleID == "" {
+			return e, true
+		}
+	}
+	return TruthEnding{}, false
 }
 
 // Killers returns the case's guilty roles, deduplicated.
@@ -240,7 +286,12 @@ type Phase struct {
 	// OrderRoleID is the role that lays out the order under OrderRoleAssigned.
 	// If that role is not seated the host takes the panel instead of stalling.
 	OrderRoleID string `json:"orderRoleId,omitempty"`
-	TimeoutSec  int    `json:"timeoutSec,omitempty"`
+	// Whisper marks the private-chat round. Seats still take their scripted
+	// turn, but the prompts point at whisper, a whisper counts as table
+	// activity for the idle timer, and the timer gets a longer floor so a
+	// table reading secrets is not cut off mid-sentence.
+	Whisper    bool `json:"whisper,omitempty"`
+	TimeoutSec int  `json:"timeoutSec,omitempty"`
 	// Dice turns the phase into a rolling contest: the highest total asks the
 	// lowest one a question from its own card list, and the target answers.
 	Dice *DiceRules `json:"dice,omitempty"`

@@ -250,3 +250,27 @@ func TestRevealListsPerCaseTruth(t *testing.T) {
 		t.Fatalf("reveal meta = %+v", reveal.Meta)
 	}
 }
+
+// A ballot only answers the printed question. In a two-death script the last
+// public line may be about the other death, so a different name is not a
+// change of mind and the prompt must say so.
+func TestVoteInstructionKeepsTheCasesApart(t *testing.T) {
+	in := voteInstruction("谁杀害了池塘边的无名男尸？")
+	for _, want := range []string{"池塘边的无名男尸", "另一桩命案", "reason"} {
+		if !strings.Contains(in, want) {
+			t.Fatalf("vote instruction misses %q:\n%s", want, in)
+		}
+	}
+}
+
+// Backing a seat in public and then voting for it reads as an incoherent AI
+// (observed twice in live rounds). The prompt asks for the reason instead of
+// forbidding the change: new evidence can legitimately flip a vote.
+func TestVoteInstructionAsksForWhyBackingTurnedIntoAccusing(t *testing.T) {
+	in := voteInstruction("谁杀害了池塘边的无名男尸？")
+	for _, want := range []string{"不在场证明", "却投票给他", "reason"} {
+		if !strings.Contains(in, want) {
+			t.Fatalf("vote instruction misses %q:\n%s", want, in)
+		}
+	}
+}

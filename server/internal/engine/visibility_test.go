@@ -393,3 +393,90 @@ func TestVisibleNeverSerialisesNullLists(t *testing.T) {
 		}
 	}
 }
+
+// A script may schedule an owner clue for a later private deal. Until that
+// phase the sidebar must not spoil it, while owner clues the script never
+// schedules stay visible as starting information.
+func TestScheduledPrivateClueStaysHiddenUntilItsPhase(t *testing.T) {
+	sc := fixtureScript()
+	sc.Clues = append(sc.Clues,
+		domain.Clue{ID: "c_start", Title: "起始情报", Content: "一开始就知道。", OwnerRoleID: "r1"},
+		domain.Clue{ID: "c_later", Title: "稍后线索", Content: "搜证阶段才发。", OwnerRoleID: "r1"},
+	)
+	sc.Phases[1].PrivateClues = []string{"c_later"}
+	g := domain.NewGame("g1", "room1", "sc1", []domain.Seat{
+		{ID: "seat1", RoomID: "room1", RoleID: "r1", Kind: domain.SeatHuman, DisplayName: "玩家一"},
+	})
+	g.Status = domain.RoomRunning
+	g.PhaseIndex = 0
+
+	has := func(id string) bool {
+		v := VisibleFor(g, sc, &g.Seats[0], VisibleOptions{})
+		for _, c := range v.OwnClues {
+			if c.ID == id {
+				return true
+			}
+		}
+		return false
+	}
+	if !has("c_start") {
+		t.Fatal("an unscheduled owner clue must be visible from the start")
+	}
+	if has("c_later") {
+		t.Fatal("a scheduled private clue leaked before its phase")
+	}
+
+	g.PhaseIndex = 1
+	if !has("c_later") {
+		t.Fatal("the scheduled private clue did not appear on its phase")
+	}
+}
+
+// Item names are public table talk; the clue text behind them is not. The agent
+// prompt must carry the same list so an AI can ask the holder for help.
+func TestPromptNamesOtherSeatsItemsButNotTheirClues(t *testing.T) {
+	sc := fixtureScript()
+	g := fixtureGame()
+	g.GrantItem("seat2", "琴匣钥匙")
+
+	seat := g.SeatByID("seat1")
+	body := buildBody(t, NewPromptBuilder(), VisibleFor(g, sc, seat, VisibleOptions{}), "现在轮到你发言。")
+	if !strings.Contains(body, "陆沉持有琴匣钥匙") {
+		t.Fatalf("prompt omits the public item list:\n%s", body)
+	}
+	if strings.Contains(body, "怀表停在十点零五分") {
+		t.Fatal("prompt leaked the clue text behind an item")
+	}
+}
+
+// The ballot prompt restates the seat's own last public line so a vote that
+// contradicts it has to come with a stated reason.
+func TestVotePromptRestatesTheSeatsLastLine(t *testing.T) {
+	sc := fixtureScript()
+	g := fixtureGame()
+	seat := g.SeatByID("seat1")
+	req := NewPromptBuilder().BuildVote(PromptInput{
+		Visible:     VisibleFor(g, sc, seat, VisibleOptions{}),
+		Persona:     persona.Get("guarded"),
+		Instruction: "投出你的票。",
+	})
+	body := req.Messages[0].Text
+	if !strings.Contains(body, "你最近一次公开发言：我先说，我一直在房间里。") {
+		t.Fatalf("vote prompt does not restate the seat's own line:\n%s", body)
+	}
+}
+
+// The phase object is shared by every seat, but its private fields are not:
+// the DM notes travel as a host-only event and must not ride along in state.
+func TestVisibleForStripsPhaseDMNnotes(t *testing.T) {
+	sc := fixtureScript()
+	g := fixtureGame()
+	g.PhaseIndex = 0 // opening, whose DMScript is "欢迎来到灯塔。"
+
+	for _, seatID := range []string{"seat1", "seat3", "seat4"} {
+		v := VisibleFor(g, sc, g.SeatByID(seatID), VisibleOptions{})
+		if v.Phase.DMScript != "" {
+			t.Fatalf("seat %s received phase dmScript %q", seatID, v.Phase.DMScript)
+		}
+	}
+}

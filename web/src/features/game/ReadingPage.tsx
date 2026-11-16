@@ -16,11 +16,14 @@ export function ReadingPage({
   role,
   onClose,
   storageKey,
+  onAdvance,
 }: {
   role: OwnRole
   onClose: () => void
   /** Per-game/per-seat row key for "remember where I stopped reading". */
   storageKey?: string
+  /** Host only: move the table on without closing the book first. */
+  onAdvance?: () => void
 }) {
   const blocks = useMemo(() => parseRichText(role.private.script), [role.private.script])
   const scrollRef = useRef<HTMLDivElement | null>(null)
@@ -115,9 +118,16 @@ export function ReadingPage({
                 {role.public.intro ? <span className="ml-2 text-xs font-normal text-slate-400">{role.public.intro}</span> : null}
               </h1>
             </div>
-            <button type="button" className="btn-ghost shrink-0 text-xs" onClick={onClose}>
-              合上剧本
-            </button>
+            <div className="flex shrink-0 items-center gap-1">
+              {onAdvance ? (
+                <button type="button" className="btn-primary text-xs" onClick={onAdvance}>
+                  进入下一阶段
+                </button>
+              ) : null}
+              <button type="button" className="btn-ghost shrink-0 text-xs" onClick={onClose}>
+                合上剧本
+              </button>
+            </div>
           </div>
 
           {/* Phone screens get larger type and a looser leading: a script read
@@ -268,9 +278,16 @@ export function ReadingPage({
       {/* A thumb cannot reach a header two thousand words up. It sits below the
           scrolling column, so it never covers a line of the book. */}
       <div className="border-t border-line/70 bg-page/95 px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] backdrop-blur sm:hidden">
-        <button type="button" className="btn-primary w-full text-sm" onClick={onClose}>
-          合上剧本，回到牌桌
-        </button>
+        <div className="flex gap-2">
+          <button type="button" className="btn-ghost flex-1 text-sm" onClick={onClose}>
+            合上剧本
+          </button>
+          {onAdvance ? (
+            <button type="button" className="btn-primary flex-1 text-sm" onClick={onAdvance}>
+              进入下一阶段
+            </button>
+          ) : null}
+        </div>
       </div>
     </div>
   )

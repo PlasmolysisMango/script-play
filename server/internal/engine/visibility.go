@@ -81,6 +81,10 @@ type PublicSeat struct {
 	IsHost      bool   `json:"isHost"`
 	Connected   bool   `json:"connected"`
 	Ready       bool   `json:"ready"`
+	// Items names what the seat carries, never the clue text behind it. Some
+	// clues only open for a seat holding a partner's item (琴匣钥匙/图纸), so
+	// the table has to be able to ask "who has it?" without a private channel.
+	Items []string `json:"items,omitempty"`
 }
 
 // HiddenIdentities reports whether seat↔role assignments must stay secret.
@@ -119,6 +123,22 @@ type VisibleOptions struct {
 //   - any other clue only for the seat that found it, until revealed,
 //   - truth never, except human reveal views,
 //   - seat configuration (persona numbers, model ids) never.
+//
+// privateCluePhases maps a pre-dealt private clue to the first phase that
+// schedules it. Unscheduled owner clues are starting information (K11's role
+// fragments) and do not appear here, so they stay visible from phase one.
+func privateCluePhases(sc *domain.Script) map[string]int {
+	out := map[string]int{}
+	for i, ph := range sc.Phases {
+		for _, id := range ph.PrivateClues {
+			if _, ok := out[id]; !ok {
+				out[id] = i
+			}
+		}
+	}
+	return out
+}
+
 func VisibleFor(g *domain.Game, sc *domain.Script, seat *domain.Seat, opt VisibleOptions) Visible {
 	idx := sc.Tokenize()
 	hidden := HiddenIdentities(g, sc)
@@ -154,6 +174,10 @@ func VisibleFor(g *domain.Game, sc *domain.Script, seat *domain.Seat, opt Visibl
 		// target's mandatory answer fragments. Only the per-seat DiceView goes
 		// over the wire; the raw config would hand the whole table the cards.
 		v.Phase.Dice = nil
+		// The DM script is delivered as a host-only event when the phase opens.
+		// Leaving it on the phase object put the moderator's notes in every
+		// player's state payload.
+		v.Phase.DMScript = ""
 		if v.Round == 0 {
 			v.Round = v.Phase.Round
 		}
@@ -176,6 +200,9 @@ func VisibleFor(g *domain.Game, sc *domain.Script, seat *domain.Seat, opt Visibl
 			IsHost:      s.IsHost,
 			Connected:   s.Connected,
 			Ready:       s.Ready,
+		}
+		if items := g.Items[s.ID]; len(items) > 0 {
+			ps.Items = append([]string(nil), items...)
 		}
 		if r := idx.RoleByID(s.RoleID); r != nil && (!hidden || (seat != nil && seat.ID == s.ID)) {
 			ps.RoleName = r.Name
@@ -211,6 +238,7 @@ func VisibleFor(g *domain.Game, sc *domain.Script, seat *domain.Seat, opt Visibl
 	if seat != nil {
 		ownSeatID = seat.ID
 	}
+	privateUnlock := privateCluePhases(sc)
 	for _, c := range sc.Clues {
 		st := g.ClueState[c.ID]
 		switch {
@@ -218,6 +246,11 @@ func VisibleFor(g *domain.Game, sc *domain.Script, seat *domain.Seat, opt Visibl
 			v.PublicClues = append(v.PublicClues, c)
 			appendFactLinks(&v, idx, c)
 		case c.OwnerRoleID != "" && seat != nil && c.OwnerRoleID == seat.RoleID:
+			// A clue the script schedules as a later private deal stays hidden
+			// until that phase, so the sidebar does not spoil the发放 event.
+			if at, ok := privateUnlock[c.ID]; ok && at > g.PhaseIndex {
+				continue
+			}
 			// A keyword-gated fragment stays sealed (even for its owner) until the
 			// table says one of its keywords.
 			if sealedClue(c, st) {

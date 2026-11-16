@@ -71,10 +71,11 @@ export function LobbyPage() {
   const speechDefault = health.data?.floorTimeoutSec ?? 90
   const speechUnlimited = isUnlimitedSpeech(speechSeconds)
   // The limit is per turn, not per round: every time a seat is handed the floor
-  // the clock restarts, and the same value also bounds its search/vote waits.
+  // the clock restarts. Search/vote use the same countdown, but a connected
+  // human keeps the turn after it hits zero instead of losing the pick/ballot.
   const speechHint = speechUnlimited
     ? '每次轮到某人都不计时，只有本人操作或主持人跳过后才推进'
-    : `每次轮到该角色单独计时${speechSeconds ? `（${speechSeconds} 秒）` : `（服务端默认 ${speechDefault} 秒）`}，搜证与投票也用它`
+    : `每次轮到该角色单独计时${speechSeconds ? `（${speechSeconds} 秒）` : `（服务端默认 ${speechDefault} 秒）`}，搜证与投票显示同样的倒计时，但不会跳过在线的真人`
   useEffect(() => {
     const clamped = Math.min(seatMax, Math.max(seatMin, maxSeats))
     if (clamped !== maxSeats) setMaxSeats(clamped)
@@ -293,7 +294,7 @@ export function LobbyPage() {
             </Field>
             <Field
               label="超时处理"
-              hint={speechUnlimited ? '不限时，无需超时处理' : autoSkip ? '到点自动跳过该座位' : '保留发言权，等主持人推进阶段'}
+              hint={speechUnlimited ? '不限时，无需超时处理' : autoSkip ? '发言到点自动跳过；在线的真人搜证与投票会等你完成' : '保留发言权，等主持人推进阶段'}
             >
               <select
                 className="input disabled:opacity-50"
@@ -360,7 +361,7 @@ function RoomCard({ room, onOpen }: { room: Room; onOpen: () => void }) {
       <p className="mt-1 text-xs text-slate-500">
         {players.length}/{room.maxSeats} 座 · AI {agents} · {room.allowSpectator ? '可观战' : '不开放观战'} ·{' '}
         发言 {speechLimitLabel(room.speechSeconds)}
-        {isUnlimitedSpeech(room.speechSeconds) ? '' : `（${room.autoSkip ? '超时自动跳过' : '等主持人推进'}）`} ·{' '}
+        {isUnlimitedSpeech(room.speechSeconds) ? '' : `（${room.autoSkip ? '发言超时自动跳过' : '等主持人推进'}）`} ·{' '}
         {room.host ? '我是主持人' : room.mySeatId ? '我已入座' : '可加入'}
       </p>
     </button>

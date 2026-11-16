@@ -144,10 +144,32 @@ func writeTools(u *strings.Builder, tools []ToolSpec) {
 
 // BuildVote renders the voting request. The reply must be a JSON object.
 func (b *PromptBuilder) BuildVote(in PromptInput) llm.Request {
+	// The ballot has to match what the seat argued at the table. The transcript
+	// can be clipped by the budget by the time the vote comes, so restate the
+	// seat's own last line and force an explanation for a change of mind.
+	if last := lastOwnSpeech(in.Visible); last != "" {
+		in.Instruction += "\n你最近一次公开发言：" + last + "。若投票对象与这次表态不同，reason 必须先说明改口的原因。"
+	}
 	req := b.Build(in)
 	req.JSON = true
 	req.Temperature = 0.3
 	return req
+}
+
+// lastOwnSpeech returns the viewer's most recent public line, shortened so a
+// long monologue does not eat the ballot prompt.
+func lastOwnSpeech(v Visible) string {
+	for i := len(v.Transcript) - 1; i >= 0; i-- {
+		line := v.Transcript[i]
+		if line.Kind == "speech" && line.SeatID == v.Seat.ID && strings.TrimSpace(line.Text) != "" {
+			text := oneLine(line.Text)
+			if r := []rune(text); len(r) > 120 {
+				text = string(r[:120]) + "…"
+			}
+			return text
+		}
+	}
+	return ""
 }
 
 // head is the identity half of the prompt: the seat, its book, and everything
@@ -165,6 +187,11 @@ func (b *PromptBuilder) head(v Visible, in PromptInput) string {
 			continue
 		}
 		fmt.Fprintf(&u, "- %s\n", oneLine(r.Intro))
+	}
+	// Item names are public now, so an agent can ask the holder to help open a
+	// deep-dive card instead of guessing who has the key.
+	if held := tableItems(v); held != "" {
+		fmt.Fprintf(&u, "\n【桌上的物品】%s（可以请持有人协助开启对应线索）\n", held)
 	}
 
 	if v.OwnRole != nil {
@@ -206,6 +233,24 @@ func (b *PromptBuilder) tail(v Visible, in PromptInput) string {
 	u.WriteString(strings.TrimSpace(in.Instruction))
 	u.WriteString("\n")
 	return u.String()
+}
+
+// tableItems lists who carries what, excluding the viewer (writeClues already
+// prints the viewer's own bag) and spectators. Only names are exposed, never
+// the clue text the item unlocks.
+func tableItems(v Visible) string {
+	var parts []string
+	for _, s := range v.Seats {
+		if s.ID == v.Seat.ID || s.Kind == domain.SeatSpectator || len(s.Items) == 0 {
+			continue
+		}
+		name := s.RoleName
+		if name == "" {
+			name = s.DisplayName
+		}
+		parts = append(parts, name+"持有"+strings.Join(s.Items, "、"))
+	}
+	return strings.Join(parts, "；")
 }
 
 func writeFacts(u *strings.Builder, v Visible) {

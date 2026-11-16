@@ -213,10 +213,10 @@ func TestRandomOrderShufflesPlayers(t *testing.T) {
 	}
 }
 
-// When the named role is played by an agent, the captain cannot press
-// 「确定顺序」: the panel must fall back to the host instead of parking the
-// phase on a seat that can never submit an order.
-func TestRoleAssignedAgentCaptainFallsBackToHost(t *testing.T) {
+// An agent captain cannot press 「确定顺序」, but the order still belongs to the
+// captain: the engine proposes a layout and the host only confirms it. The host
+// must not be able to replace that layout with one of their own.
+func TestRoleAssignedAgentCaptainProposesOrderForHostConfirmation(t *testing.T) {
 	sc := fixtureScript()
 	sc.Phases[1].Order = domain.OrderRoleAssigned
 	sc.Phases[1].OrderRoleID = "r2"
@@ -249,7 +249,7 @@ func TestRoleAssignedAgentCaptainFallsBackToHost(t *testing.T) {
 
 	waitFor(t, 5*time.Second, func() bool {
 		st, ok := actor.StateForSeat("seat0")
-		return ok && st.Prompt != nil && st.Prompt.Kind == "order"
+		return ok && st.Prompt != nil && st.Prompt.Kind == "order_confirm"
 	})
 	for _, id := range []string{"seat1", "seat2", "seat3"} {
 		st, ok := actor.StateForSeat(id)
@@ -257,14 +257,38 @@ func TestRoleAssignedAgentCaptainFallsBackToHost(t *testing.T) {
 			t.Fatalf("%s state missing", id)
 		}
 		if st.Prompt != nil {
-			t.Fatalf("%s received the order prompt, want the host's fallback", id)
+			t.Fatalf("%s received the order prompt, want the host's confirmation", id)
 		}
 	}
 
-	if err := actor.Handle(ctx, "seat0", ClientMessage{Type: "order.set", SeatIDs: []string{"seat1", "seat2", "seat3"}}); err != nil {
+	hostState, _ := actor.StateForSeat("seat0")
+	proposed := hostState.Order
+	if len(proposed) != 3 || len(hostState.Prompt.Seats) != 3 {
+		t.Fatalf("proposal = %v / %+v, want all three players", proposed, hostState.Prompt.Seats)
+	}
+
+	// The host may approve the captain's order, not write a different one.
+	if err := actor.Handle(ctx, "seat0", ClientMessage{Type: "order.set", SeatIDs: []string{"seat3", "seat2", "seat1"}}); err != nil {
 		t.Fatalf("order.set: %v", err)
 	}
-	waitEvent(t, actor, "", "本阶段顺序（主持人指定）")
+	waitEvent(t, actor, "seat0", "顺序已由陆沉（AI）指定")
+	afterSet, _ := actor.StateForSeat("seat0")
+	if strings.Join(afterSet.Order, ",") != strings.Join(proposed, ",") {
+		t.Fatalf("host replaced the captain's order: %v -> %v", proposed, afterSet.Order)
+	}
+
+	if err := actor.Handle(ctx, "seat0", ClientMessage{Type: "order.confirm"}); err != nil {
+		t.Fatalf("order.confirm: %v", err)
+	}
+	waitEvent(t, actor, "", "本阶段顺序（陆沉（AI）指定）")
+	waitFor(t, 5*time.Second, func() bool {
+		for _, ev := range actor.Snapshot().Events {
+			if ev.Type == domain.EvSystem && strings.Contains(ev.Text, "轮到你搜证") {
+				return true
+			}
+		}
+		return false
+	})
 }
 
 func drawnBy(g domain.Game, seatID string) int {

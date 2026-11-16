@@ -99,6 +99,19 @@ func (c ActorConfig) discussIdle() time.Duration {
 	return c.DiscussIdle
 }
 
+// whisperIdleFloor keeps a private-chat round open long enough to read several
+// secrets and compose an answer. The normal DiscussIdle is tuned for public
+// back-and-forth and used to cut the private round off mid-sentence.
+const whisperIdleFloor = 5 * time.Minute
+
+func (c ActorConfig) discussionIdle(ph *domain.Phase) time.Duration {
+	idle := c.discussIdle()
+	if ph != nil && ph.Whisper && idle > 0 && idle < whisperIdleFloor {
+		return whisperIdleFloor
+	}
+	return idle
+}
+
 func (c ActorConfig) agent() time.Duration {
 	if c.AgentTimeout <= 0 {
 		return 120 * time.Second
@@ -114,6 +127,14 @@ func (c ActorConfig) deadline() (*time.Timer, <-chan time.Time) {
 	}
 	t := time.NewTimer(c.floor())
 	return t, t.C
+}
+
+// connectedHuman reports whether the seat is a human with a live socket. A
+// timer may skip a silent AI or a browser that went away, but spending a
+// connected player's search quota or ballot because they paused to read the
+// role book is not an "away" case: the host can still advance the phase.
+func (a *Actor) connectedHuman(seat domain.Seat) bool {
+	return seat.Kind == domain.SeatHuman && a.cfg.Presence != nil && a.cfg.Presence(seat.ID)
 }
 
 // presenceGrace is how long a disconnected seat keeps its turn before the
@@ -220,6 +241,9 @@ type Actor struct {
 	// host_assigned leaves both empty until the host lays the round out.
 	order    []domain.Seat
 	orderPos int
+	// orderConfirmOnly marks an AI-named role's proposal: the host may only
+	// confirm it, never lay out a different order.
+	orderConfirmOnly bool
 	// searchQuota is this round's per-seat draw quota when the script hands them
 	// out by rank (K12 PickByRank). Empty means the flat phase limit applies.
 	searchQuota map[string]int
@@ -388,7 +412,11 @@ type SeatState struct {
 	// client never has to guess clue ids. It stays empty in random mode, where
 	// Draw carries the remaining draws instead.
 	Search []SearchOption `json:"search,omitempty"`
-	Draw   int            `json:"draw,omitempty"`
+	// Claimable lists deep-dive cards unlocked by a card already in hand. They
+	// are not part of the deck and stay claimable after the search round ends,
+	// so the client shows them above the clue list in every phase.
+	Claimable []SearchOption `json:"claimable,omitempty"`
+	Draw      int            `json:"draw,omitempty"`
 	// Order is the seat ids in this phase's turn order, repeated in the order the
 	// engine will walk them; the table uses it to see who is coming next.
 	Order []string `json:"order,omitempty"`
@@ -507,6 +535,10 @@ func (a *Actor) stateLocked(seat *domain.Seat, includeTruth bool) SeatState {
 					st.Search = append(a.searchOptionsLocked(*seat, ph), st.Search...)
 				}
 			}
+		} else if ph != nil && ph.Type == domain.PhaseDiscussion {
+			// The search round is over, but the deep-dive card is a bonus on a
+			// clue already in hand: keep its claim button reachable.
+			st.Claimable = a.grantedOptionsLocked(*seat, ph)
 		}
 	}
 	if a.hasPointPoolLocked() {
@@ -536,7 +568,11 @@ func (a *Actor) stateLocked(seat *domain.Seat, includeTruth bool) SeatState {
 		st.Queue = append(st.Queue, slot)
 	}
 	if a.awaitingOrder && seat != nil && seat.ID == a.orderSeatID {
-		st.Prompt = a.orderPromptLocked()
+		if a.orderConfirmOnly {
+			st.Prompt = a.orderConfirmPromptLocked()
+		} else {
+			st.Prompt = a.orderPromptLocked()
+		}
 	}
 	if a.dice != nil && seat != nil {
 		st.Dice = a.diceViewLocked(seat)
@@ -674,7 +710,7 @@ func (a *Actor) Handle(ctx context.Context, seatID string, msg ClientMessage) er
 		// consume a pick and must stay claimable after this seat's turns are over,
 		// because the item it needs often surfaces later in the same round.
 		a.mu.Lock()
-		claim := phase != nil && phase.Type == domain.PhaseSearch && a.grantedClaimableLocked(*seat, msg.ClueID)
+		claim := phase != nil && claimPhase(phase) && a.grantedClaimableLocked(*seat, msg.ClueID)
 		a.mu.Unlock()
 		if !claim {
 			return ErrNotAllowed{Reason: "轮到你搜证时才能取线索"}
@@ -782,7 +818,7 @@ func (a *Actor) sideCommand(seat domain.Seat, msg ClientMessage) bool {
 		// 挤在本人的搜证回合里：物品可能要到别人抽完牌才凑齐。
 		a.mu.Lock()
 		ph := a.m.Current(a.g)
-		claim := ph != nil && ph.Type == domain.PhaseSearch && a.grantedClaimableLocked(seat, msg.ClueID)
+		claim := ph != nil && claimPhase(ph) && a.grantedClaimableLocked(seat, msg.ClueID)
 		a.mu.Unlock()
 		if !claim {
 			return false
@@ -942,6 +978,7 @@ func (a *Actor) advance(ctx context.Context, gen int) {
 	a.orderPos = 0
 	a.awaitingOrder = false
 	a.orderSeatID = ""
+	a.orderConfirmOnly = false
 	a.resetTalkLocked()
 	a.cancelWaiterLocked()
 	if done || ph == nil {
@@ -990,7 +1027,17 @@ func (a *Actor) requestAdvance(ctx context.Context, expectedPhaseID string) erro
 		}
 	}
 	a.floor = nil
+	closeVote := ph != nil && ph.Type == domain.PhaseVote && !a.voteClosed
+	if closeVote {
+		a.voteClosed = true
+	}
 	a.mu.Unlock()
+	if closeVote {
+		// The host moved on before every agent ballot came back: abstain for the
+		// missing seats so the tally and the ending still see all five players.
+		a.sealMissingVotes()
+		a.tallyVotes()
+	}
 	a.advance(ctx, gen)
 	return nil
 }
@@ -1042,6 +1089,7 @@ func (a *Actor) prepareOrder(ctx context.Context, gen int, ph *domain.Phase) boo
 	a.orderPos = 0
 	a.awaitingOrder = false
 	a.orderSeatID = ""
+	a.orderConfirmOnly = false
 	seats := NewScheduler(a.g.Seats).Order()
 	if len(ph.OnlyRoleIDs) > 0 {
 		// A phase dealt to a subset keeps the seating order but drops everyone
@@ -1107,7 +1155,9 @@ func (a *Actor) prepareOrder(ctx context.Context, gen int, ph *domain.Phase) boo
 }
 
 // awaitOrder waits for the seat in charge to lay out the whole round. It
-// returns false when that seat (or the host) skipped the phase instead.
+// returns false when that seat (or the host) skipped the phase instead. When
+// the named role is an agent, the engine has the agent publish a layout and the
+// host only confirms it: the captain cannot press the ordering panel.
 func (a *Actor) awaitOrder(ctx context.Context, gen int, ph *domain.Phase) bool {
 	a.mu.Lock()
 	if gen != a.phaseGen {
@@ -1115,6 +1165,32 @@ func (a *Actor) awaitOrder(ctx context.Context, gen int, ph *domain.Phase) bool 
 		return false
 	}
 	assignee := a.orderAssigneeLocked(ph)
+	confirmOnly := false
+	proposer := ""
+	if roleSeat := a.orderRoleSeatLocked(ph); roleSeat != nil && roleSeat.Kind == domain.SeatAgent {
+		proposal := a.proposeOrderLocked(ph)
+		proposer = a.orderAiLabelLocked(ph)
+		host := a.hostSeatLocked()
+		if host == nil || host.ID == roleSeat.ID {
+			// No human can confirm an agent's layout: apply it directly rather
+			// than parking the phase on a panel nobody will ever press.
+			a.order = proposal
+			a.orderPos = 0
+			a.appendLocked(domain.Event{
+				Type:    domain.EvSystem,
+				PhaseID: ph.ID,
+				Text:    "本阶段顺序（" + proposer + "指定）：" + a.orderNamesLocked(proposal),
+			})
+			a.persistLocked()
+			a.mu.Unlock()
+			return true
+		}
+		a.order = proposal
+		a.orderPos = 0
+		a.orderConfirmOnly = true
+		confirmOnly = true
+		assignee = host
+	}
 	if assignee == nil {
 		// A room without a host seat has nobody to order the round: fall back to
 		// seating order rather than stalling forever.
@@ -1148,12 +1224,16 @@ func (a *Actor) awaitOrder(ctx context.Context, gen int, ph *domain.Phase) bool 
 		// visibility would hide it from the very seat that must answer.
 		vis = SeatVisibility(assignee.ID)
 	}
+	eventText := fmt.Sprintf("本阶段顺序由你指定：把 %d 位可以行动的角色排好顺序后点「确定顺序」。", len(a.phasePlayersLocked(ph)))
+	if confirmOnly {
+		eventText = fmt.Sprintf("%s 已指定顺序：%s。请确认后开始本轮搜证。", proposer, a.orderNamesLocked(a.order))
+	}
 	a.appendLocked(domain.Event{
 		Type:       domain.EvSystem,
 		SeatID:     assignee.ID,
 		Visibility: vis,
 		PhaseID:    ph.ID,
-		Text:       fmt.Sprintf("本阶段顺序由你指定：把 %d 位可以行动的角色排好顺序后点「确定顺序」。", len(a.phasePlayersLocked(ph))),
+		Text:       eventText,
 	})
 	a.persistLocked()
 	a.mu.Unlock()
@@ -1165,6 +1245,7 @@ func (a *Actor) awaitOrder(ctx context.Context, gen int, ph *domain.Phase) bool 
 		}
 		a.awaitingOrder = false
 		a.orderSeatID = ""
+		a.orderConfirmOnly = false
 		a.mu.Unlock()
 	}()
 
@@ -1176,7 +1257,25 @@ func (a *Actor) awaitOrder(ctx context.Context, gen int, ph *domain.Phase) bool 
 			switch msg.Type {
 			case "host.skip":
 				return false
+			case "order.confirm":
+				if !confirmOnly {
+					a.notify(*assignee, "当前没有待确认的顺序")
+					continue
+				}
+				a.mu.Lock()
+				a.appendLocked(domain.Event{
+					Type:    domain.EvSystem,
+					PhaseID: ph.ID,
+					Text:    "本阶段顺序（" + proposer + "指定）：" + a.orderNamesLocked(a.order),
+				})
+				a.persistLocked()
+				a.mu.Unlock()
+				return true
 			case "order.set":
+				if confirmOnly {
+					a.notify(*assignee, "顺序已由"+proposer+"指定，请直接确认")
+					continue
+				}
 				if err := a.applyOrder(ph, msg.SeatIDs); err != nil {
 					a.notify(*assignee, err.Error())
 					continue
@@ -1195,18 +1294,28 @@ func (a *Actor) awaitOrder(ctx context.Context, gen int, ph *domain.Phase) bool 
 	}
 }
 
+// orderRoleSeatLocked is the named role's seat for a role_assigned phase,
+// regardless of whether a human or an agent plays it.
+func (a *Actor) orderRoleSeatLocked(ph *domain.Phase) *domain.Seat {
+	if ph.Order != domain.OrderRoleAssigned || ph.OrderRoleID == "" {
+		return nil
+	}
+	for i := range a.g.Seats {
+		s := &a.g.Seats[i]
+		if s.RoleID == ph.OrderRoleID && s.Kind != domain.SeatSpectator {
+			return s
+		}
+	}
+	return nil
+}
+
 // orderAssigneeLocked is who lays out the phase order. host_assigned gives the
 // panel to the moderator; role_assigned gives it to the named role's player
-// (K7 船长). An unseated role, or one played by an agent, falls back to the host
-// so the phase never stalls on a seat that cannot submit an order.
+// (K7 船长). An unseated role, or an agent, falls back to the host so the phase
+// never stalls on a seat that cannot submit an order.
 func (a *Actor) orderAssigneeLocked(ph *domain.Phase) *domain.Seat {
-	if ph.Order == domain.OrderRoleAssigned && ph.OrderRoleID != "" {
-		for i := range a.g.Seats {
-			s := &a.g.Seats[i]
-			if s.RoleID == ph.OrderRoleID && s.Kind != domain.SeatAgent && s.Kind != domain.SeatSpectator {
-				return s
-			}
-		}
+	if s := a.orderRoleSeatLocked(ph); s != nil && s.Kind != domain.SeatAgent {
+		return s
 	}
 	return a.hostSeatLocked()
 }
@@ -1293,6 +1402,39 @@ func (a *Actor) orderPromptLocked() *TurnPrompt {
 		players = a.g.PlayerSeats()
 	}
 	for _, s := range players {
+		p.Seats = append(p.Seats, TurnOption{SeatID: s.ID, Role: a.speakerLocked(s), Display: s.DisplayName, Kind: s.Kind})
+	}
+	return p
+}
+
+// proposeOrderLocked is the agent captain's layout. It is generated locally so
+// a slow or missing model can never block the phase on the ordering step.
+func (a *Actor) proposeOrderLocked(ph *domain.Phase) []domain.Seat {
+	players := append([]domain.Seat(nil), a.phasePlayersLocked(ph)...)
+	rand.Shuffle(len(players), func(i, j int) { players[i], players[j] = players[j], players[i] })
+	return players
+}
+
+// orderAiLabelLocked names the agent holding the ordering pen, e.g. "船长（AI）".
+func (a *Actor) orderAiLabelLocked(ph *domain.Phase) string {
+	if ph.OrderRoleID != "" {
+		return a.roleNameLocked(ph.OrderRoleID) + "（AI）"
+	}
+	return "AI"
+}
+
+// orderConfirmPromptLocked shows the host the agent captain's layout. It has no
+// editable seat list: the host confirms the captain's call, not their own.
+func (a *Actor) orderConfirmPromptLocked() *TurnPrompt {
+	p := &TurnPrompt{Kind: "order_confirm"}
+	ph := a.m.Current(a.g)
+	if ph != nil {
+		p.PhaseID = ph.ID
+		p.Text = a.orderAiLabelLocked(ph) + " 已指定顺序：" + a.orderNamesLocked(a.order) + "。请确认后开始本轮搜证。"
+	} else {
+		p.Text = "顺序已由 AI 指定，请确认后开始本轮搜证。"
+	}
+	for _, s := range a.order {
 		p.Seats = append(p.Seats, TurnOption{SeatID: s.ID, Role: a.speakerLocked(s), Display: s.DisplayName, Kind: s.Kind})
 	}
 	return p
@@ -1676,11 +1818,15 @@ func (a *Actor) phaseCtx(fallback context.Context) context.Context {
 }
 
 func (a *Actor) awaitSearch(ctx context.Context, gen int, seat domain.Seat, ph *domain.Phase) bool {
+	wctx, stopWait := context.WithCancel(ctx)
+	defer stopWait()
+
 	a.mu.Lock()
 	if gen != a.phaseGen {
 		a.mu.Unlock()
 		return false
 	}
+	a.waitCancel = stopWait
 	left := a.picksLeftLocked(seat, ph)
 	// A seat can run out of cards it is allowed to take while it still owes
 	// picks: its own frisking clue goes back to the pile, a deep-dive card is
@@ -1722,7 +1868,7 @@ func (a *Actor) awaitSearch(ctx context.Context, gen int, seat domain.Seat, ph *
 	})
 	// The floor also covers search turns: the table needs to see whose pick it
 	// is, and the client gates "随机抽取" on it.
-	a.floor = &Floor{SeatID: seat.ID, PhaseID: ph.ID, ExpiresAt: time.Now().Add(a.cfg.floor())}
+	a.floor = &Floor{SeatID: seat.ID, PhaseID: ph.ID, Kind: "search", ExpiresAt: time.Now().Add(a.cfg.floor())}
 	a.persistLocked()
 	a.mu.Unlock()
 
@@ -1747,7 +1893,7 @@ func (a *Actor) awaitSearch(ctx context.Context, gen int, seat domain.Seat, ph *
 	defer stopGone()
 	for {
 		select {
-		case <-ctx.Done():
+		case <-wctx.Done():
 			return false
 		case <-gone:
 			a.mu.Lock()
@@ -1759,6 +1905,18 @@ func (a *Actor) awaitSearch(ctx context.Context, gen int, seat domain.Seat, ph *
 			a.mu.Unlock()
 			return false
 		case <-expired:
+			if a.connectedHuman(seat) {
+				// The clock ran out while the player was still here, typically with
+				// the role book open. Do not spend the pick; the host can skip.
+				a.mu.Lock()
+				if gen == a.phaseGen {
+					a.appendLocked(domain.Event{Type: domain.EvSystem, SeatID: seat.ID, Visibility: SeatVisibility(seat.ID), Text: "搜证计时结束，仍在等待你的抽取；主持人也可以跳过本阶段"})
+					a.persistLocked()
+				}
+				a.mu.Unlock()
+				expired = nil
+				continue
+			}
 			a.mu.Lock()
 			if gen == a.phaseGen {
 				// A skipped turn spends the quota: otherwise the walk would hand the
@@ -2027,6 +2185,15 @@ func (a *Actor) dealPrivateCluesLocked(ph *domain.Phase) {
 			Text:       fmt.Sprintf("你收到了专属线索【%s】：%s", c.Title, c.Content),
 			Meta:       map[string]string{"clueId": id, "title": c.Title},
 		})
+		if c.GrantsItem != "" && a.g.GrantItem(owner.ID, c.GrantsItem) {
+			a.appendLocked(domain.Event{
+				Type:       domain.EvSystem,
+				PhaseID:    ph.ID,
+				SeatID:     owner.ID,
+				Visibility: SeatVisibility(owner.ID),
+				Text:       fmt.Sprintf("你获得了物品【%s】", c.GrantsItem),
+			})
+		}
 	}
 }
 
@@ -2064,6 +2231,31 @@ func patDownOf(c *domain.Clue, seat domain.Seat) bool {
 	return strings.Contains(c.Kind, "搜身") ||
 		strings.Contains(c.Location, "搜身") ||
 		strings.Contains(c.Title, "搜身")
+}
+
+// claimPhase reports whether an already-granted deep-dive card may be named.
+// The card is a bonus on its parent clue, not a draw, so the player can still
+// pick it up in the discussion that follows the search round.
+func claimPhase(ph *domain.Phase) bool {
+	return ph != nil && (ph.Type == domain.PhaseSearch || ph.Type == domain.PhaseDiscussion)
+}
+
+// agentClaimGranted picks up every deep-dive card this AI seat has already
+// unlocked. An agent never waits for its next search turn to press the button,
+// and mustReveal cards are read out to the table instead of dying in inventory.
+func (a *Actor) agentClaimGranted(seat domain.Seat, ph *domain.Phase) {
+	a.mu.Lock()
+	if a.finished || a.m.Current(a.g) != ph {
+		a.mu.Unlock()
+		return
+	}
+	opts := a.grantedOptionsLocked(seat, ph)
+	a.mu.Unlock()
+	for _, o := range opts {
+		if err := a.claimClue(seat, o.ID, ph); err != nil {
+			a.notify(seat, err.Error())
+		}
+	}
 }
 
 // grantedClaimableLocked reports whether clueID is a 「可获得曲径通幽 N」 card
@@ -2113,12 +2305,18 @@ func (a *Actor) grantedOptionsLocked(seat domain.Seat, ph *domain.Phase) []Searc
 		if c.OwnerRoleID != "" && c.OwnerRoleID != seat.RoleID {
 			continue
 		}
+		hint := grantedHint(c)
 		if reason := a.clueBlockedLocked(seat, c); reason != "" {
-			if len(c.RequiresItems) == 0 || a.itemPartnerLocked(seat, c) == nil {
+			partner := a.itemPartnerLocked(seat, c)
+			if len(c.RequiresItems) == 0 || partner == nil {
 				continue
 			}
+			// The printed rule is 「达成共识后可共同开启」. Name the partner in
+			// the button itself: otherwise the card looks openable without a key
+			// and the player cannot tell whose item is being used.
+			hint += "（与" + a.speakerLocked(*partner) + "共同开启）"
 		}
-		out = append(out, SearchOption{ID: c.ID, Hint: grantedHint(c), Granted: true})
+		out = append(out, SearchOption{ID: c.ID, Hint: hint, Granted: true})
 	}
 	return out
 }
@@ -2949,6 +3147,10 @@ func (a *Actor) awaitSpeech(ctx context.Context, gen int, seat domain.Seat, ph *
 		f.ExpiresAt = time.Now().Add(a.cfg.floor())
 	}
 	a.floor = &f
+	floorText := fmt.Sprintf("轮到你发言（%s）；不想说可以点「不发言」把机会让给别人", limit)
+	if ph.Whisper {
+		floorText = fmt.Sprintf("轮到你私下交谈（%s）；可选一个对象私聊，或点「不发言」跳过", limit)
+	}
 	a.appendLocked(domain.Event{
 		Type:       domain.EvSystem,
 		SeatID:     seat.ID,
@@ -2957,7 +3159,7 @@ func (a *Actor) awaitSpeech(ctx context.Context, gen int, seat domain.Seat, ph *
 		// Every scripted turn names the pass move, not only the free-talk
 		// prompts: players kept waiting out the clock because nothing said the
 		// turn could be handed on.
-		Text: fmt.Sprintf("轮到你发言（%s）；不想说可以点「不发言」把机会让给别人", limit),
+		Text: floorText,
 	})
 	a.persistLocked()
 	a.mu.Unlock()
@@ -3016,7 +3218,11 @@ func (a *Actor) awaitSpeech(ctx context.Context, gen int, seat domain.Seat, ph *
 			a.mu.Lock()
 			if gen == a.phaseGen {
 				a.speech[seat.ID]++
-				a.appendLocked(domain.Event{Type: domain.EvSystem, PhaseID: ph.ID, SeatID: seat.ID, Text: fmt.Sprintf("%s 未在时限内发言，跳过", a.speakerLocked(seat))})
+				timeoutText := fmt.Sprintf("%s 未在时限内公开发言，跳过", a.speakerLocked(seat))
+				if ph.Whisper {
+					timeoutText = fmt.Sprintf("%s 未在时限内发言，跳过", a.speakerLocked(seat))
+				}
+				a.appendLocked(domain.Event{Type: domain.EvSystem, PhaseID: ph.ID, SeatID: seat.ID, Text: timeoutText})
 				a.persistLocked()
 			}
 			a.mu.Unlock()
@@ -3261,26 +3467,43 @@ func (a *Actor) runVote(ctx context.Context, gen int) {
 	order := NewScheduler(a.g.Seats).Order()
 	a.mu.Unlock()
 
+	// Agents vote in parallel: the walk used to ask them one at a time, so a
+	// slow model ate the whole ballot window and the seats behind it never got
+	// prompted. Humans are still walked in scripted order.
+	var wg sync.WaitGroup
 	for _, seat := range order {
-		if !a.alive(gen) {
-			return
-		}
-		if a.hasVoted(seat.ID) {
-			// An early ballot was already accepted while another seat held the
-			// prompt; do not ask this one twice.
+		if seat.Kind != domain.SeatAgent {
 			continue
 		}
-		if seat.Kind == domain.SeatAgent {
+		seat := seat
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
 			a.agentVote(ctx, gen, seat)
-		} else {
-			a.awaitVote(ctx, gen, seat)
-		}
+		}()
 	}
+	for _, seat := range order {
+		if !a.alive(gen) {
+			break
+		}
+		if seat.Kind == domain.SeatAgent || a.hasVoted(seat.ID) {
+			continue
+		}
+		a.awaitVote(ctx, gen, seat)
+	}
+	wg.Wait()
+
 	a.mu.Lock()
+	if gen != a.phaseGen || a.finished || a.voteClosed {
+		a.mu.Unlock()
+		return
+	}
 	// Sealing the ballot before the tally keeps a frame that arrives during the
 	// tally from changing a result that is already on screen.
 	a.voteClosed = true
 	a.mu.Unlock()
+
+	a.sealMissingVotes()
 	a.tallyVotes()
 	a.mu.Lock()
 	a.applyVoteEffectLocked(ph)
@@ -3289,7 +3512,36 @@ func (a *Actor) runVote(ctx context.Context, gen int) {
 	a.completePhase(ctx, gen)
 }
 
+// sealMissingVotes writes an abstention for every seated player that never
+// cast a ballot. Missing seats used to simply vanish from the tally, which
+// made a five-player vote look like a two-player one and left the ending with
+// no majority to follow.
+func (a *Actor) sealMissingVotes() {
+	a.mu.Lock()
+	ph := a.m.Current(a.g)
+	if ph == nil || ph.Type != domain.PhaseVote {
+		a.mu.Unlock()
+		return
+	}
+	var missing []domain.Seat
+	for _, s := range a.g.Seats {
+		if s.Kind == domain.SeatSpectator {
+			continue
+		}
+		if _, ok := a.g.Votes[s.ID]; !ok {
+			missing = append(missing, s)
+		}
+	}
+	a.mu.Unlock()
+	for _, s := range missing {
+		a.recordVote(s, "")
+	}
+}
+
 func (a *Actor) awaitVote(ctx context.Context, gen int, seat domain.Seat) bool {
+	wctx, stopWait := context.WithCancel(ctx)
+	defer stopWait()
+
 	a.mu.Lock()
 	if gen != a.phaseGen {
 		a.mu.Unlock()
@@ -3300,10 +3552,21 @@ func (a *Actor) awaitVote(ctx context.Context, gen int, seat domain.Seat) bool {
 		a.mu.Unlock()
 		return true
 	}
+	a.waitCancel = stopWait
 	ch := make(chan ClientMessage, 1)
 	wake := a.voteWake
 	a.waiters[seat.ID] = ch
-	a.appendLocked(domain.Event{Type: domain.EvSystem, SeatID: seat.ID, Visibility: SeatVisibility(seat.ID), Text: a.votePromptFor(a.m.Current(a.g))})
+	ph := a.m.Current(a.g)
+	phaseID := ""
+	if ph != nil {
+		phaseID = ph.ID
+	}
+	f := Floor{SeatID: seat.ID, PhaseID: phaseID, Kind: "vote"}
+	if !a.cfg.Unlimited {
+		f.ExpiresAt = time.Now().Add(a.cfg.floor())
+	}
+	a.floor = &f
+	a.appendLocked(domain.Event{Type: domain.EvSystem, SeatID: seat.ID, Visibility: SeatVisibility(seat.ID), PhaseID: phaseID, Text: a.votePromptFor(ph)})
 	a.persistLocked()
 	a.mu.Unlock()
 
@@ -3313,6 +3576,9 @@ func (a *Actor) awaitVote(ctx context.Context, gen int, seat domain.Seat) bool {
 		// waiter for this seat.
 		if cur, ok := a.waiters[seat.ID]; ok && cur == ch {
 			delete(a.waiters, seat.ID)
+		}
+		if a.floor != nil && a.floor.SeatID == seat.ID && a.floor.PhaseID == phaseID {
+			a.floor = nil
 		}
 		a.mu.Unlock()
 	}()
@@ -3325,12 +3591,25 @@ func (a *Actor) awaitVote(ctx context.Context, gen int, seat domain.Seat) bool {
 	defer stopGone()
 	for {
 		select {
-		case <-ctx.Done():
+		case <-wctx.Done():
 			return false
 		case <-gone:
 			a.recordVote(seat, "")
 			return false
 		case <-expired:
+			if a.connectedHuman(seat) {
+				// A connected player does not lose a ballot to a clock, especially
+				// while they are writing their reasoning down. The host may still
+				// advance, which seals the missing ballot as an abstention.
+				a.mu.Lock()
+				if gen == a.phaseGen {
+					a.appendLocked(domain.Event{Type: domain.EvSystem, SeatID: seat.ID, Visibility: SeatVisibility(seat.ID), Text: "投票计时结束，仍在等待你的选择；主持人也可以跳过本阶段"})
+					a.persistLocked()
+				}
+				a.mu.Unlock()
+				expired = nil
+				continue
+			}
 			a.recordVote(seat, "")
 			return false
 		case <-wake:
@@ -3371,15 +3650,33 @@ func (a *Actor) agentVote(ctx context.Context, gen int, seat domain.Seat) {
 	a.thinking(seat, "start")
 	defer a.thinking(seat, "stop")
 
-	instruction := question + "。请只输出一个 JSON 对象：{\"vote\":\"<角色名>\",\"reason\":\"<一句话理由>\"}。vote 必须填在座角色名，不能是自己；若你怀疑真凶不在座，也可以直接写那个人的姓名。"
+	instruction := voteInstruction(question)
 	req := a.pb.BuildVote(PromptInput{Visible: v, Persona: p, Instruction: instruction})
 	text, _, err := a.generate(ctx, gen, seat, req, visibleCorpus(v)...)
+	if !a.voteStillOpen(gen) {
+		return
+	}
 	if err != nil {
 		a.recordVote(seat, "")
 		return
 	}
 	roleName := extractVoteRole(text)
 	a.recordVoteByName(seat, roleName, v)
+}
+
+// voteInstruction asks the model to answer the printed ballot only. A script may
+// stage two deaths, and a seat that argued about the other one has not "changed
+// its mind" by naming the killer the question actually asks about.
+func voteInstruction(question string) string {
+	return question + "。请只输出一个 JSON 对象：{\"vote\":\"<角色名>\",\"reason\":\"<一句话理由>\"}。vote 必须填在座角色名，不能是自己；若你怀疑真凶不在座，也可以直接写那个人的姓名。投票只回答上面这一问所指的命案；如果你刚才公开怀疑的是另一桩命案，请按本题重新判断，并在 reason 里说明依据。若你在公开讨论中支持、作证或为某位角色提供了不在场证明，最终却投票给他/她，必须在 reason 里说明为何改变判断。"
+}
+
+// voteStillOpen guards the asynchronous agent ballot: a slow model that
+// returns after the host advanced must not write into the next phase.
+func (a *Actor) voteStillOpen(gen int) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return !a.finished && !a.voteClosed && gen == a.phaseGen
 }
 
 func extractVoteRole(text string) string {
@@ -3650,7 +3947,21 @@ func (a *Actor) runReveal() {
 			text += "\n\n【逐案真相】\n" + strings.Join(lines, "\n")
 		}
 	}
+	ending, accused := a.pickEndingLocked()
+	if ending.Text != "" {
+		heading := "【结局】"
+		if ending.Name != "" {
+			heading = "【结局 · " + ending.Name + "】"
+		}
+		text += "\n\n" + heading + "\n\n" + ending.Text
+	}
 	meta := map[string]string{}
+	if ending.ID != "" {
+		meta["endingId"] = ending.ID
+	}
+	if accused != "" {
+		meta["accusedRoleId"] = accused
+	}
 	if len(killers) > 0 {
 		meta["killerRoleId"] = killers[0]
 		meta["killerRoleIds"] = strings.Join(killers, ",")
@@ -3675,6 +3986,40 @@ func (a *Actor) runReveal() {
 		Meta:    meta,
 	})
 	a.persistLocked()
+}
+
+// pickEndingLocked chooses the epilogue the ballot earned. A unique accused
+// role selects its ending; a tie, an all-abstain ballot or an unknown name gets
+// the neutral default. Only the chosen ending ever reaches the table.
+// Callers hold mu.
+func (a *Actor) pickEndingLocked() (domain.TruthEnding, string) {
+	if len(a.sc.Truth.Endings) == 0 {
+		return domain.TruthEnding{}, ""
+	}
+	counts := map[string]int{}
+	for _, roleID := range a.g.Votes {
+		if roleID != "" {
+			counts[roleID]++
+		}
+	}
+	best, bestN, tied := "", 0, false
+	for roleID, n := range counts {
+		switch {
+		case n > bestN:
+			best, bestN, tied = roleID, n, false
+		case n == bestN && n > 0:
+			tied = true
+		}
+	}
+	if bestN > 0 && !tied {
+		if e, ok := a.sc.Truth.EndingForRole(best); ok {
+			return e, best
+		}
+		e, _ := a.sc.Truth.DefaultEnding()
+		return e, best
+	}
+	e, _ := a.sc.Truth.DefaultEnding()
+	return e, ""
 }
 
 // ---- helpers ----

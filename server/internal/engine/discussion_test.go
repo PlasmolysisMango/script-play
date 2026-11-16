@@ -224,6 +224,84 @@ func TestHostControlledDiscussionIgnoresIdleTimer(t *testing.T) {
 	}
 }
 
+// A private-chat round raises the ordinary silence timer to the whisper floor,
+// and never shortens a longer one.
+func TestWhisperPhaseGetsALongerIdleWindow(t *testing.T) {
+	cfg := ActorConfig{DiscussIdle: 120 * time.Second}
+	public := &domain.Phase{ID: "p4", Type: domain.PhaseDiscussion, Name: "公聊"}
+	private := &domain.Phase{ID: "p5", Type: domain.PhaseDiscussion, Name: "私聊", Whisper: true}
+	if got := cfg.discussionIdle(public); got != 120*time.Second {
+		t.Fatalf("public discussion idle = %s, want 120s", got)
+	}
+	if got := cfg.discussionIdle(private); got != whisperIdleFloor {
+		t.Fatalf("whisper phase idle = %s, want %s", got, whisperIdleFloor)
+	}
+	cfg.DiscussIdle = 10 * time.Minute
+	if got := cfg.discussionIdle(private); got != 10*time.Minute {
+		t.Fatalf("longer idle was shortened to %s", got)
+	}
+	cfg.DiscussIdle = 120 * time.Second
+	cfg.WaitForHost = true
+	if got := cfg.discussionIdle(private); got != 0 {
+		t.Fatalf("host-driven room got an idle timer: %s", got)
+	}
+}
+
+// A whisper is speech: it restarts the silence window even though no public
+// turn was queued, so a private exchange is not cut off mid-sentence.
+func TestWhisperRestartsTheDiscussionIdleWindow(t *testing.T) {
+	sc := fixtureScript()
+	sc.Phases = []domain.Phase{
+		{ID: "p0", Type: domain.PhaseOpening, Name: "开场"},
+		{ID: "p1", Type: domain.PhaseDiscussion, Name: "私聊", SpeechPerPlayer: 1, Order: domain.OrderRoundRobin},
+		{ID: "p2", Type: domain.PhaseDiscussion, Name: "下一段", SpeechPerPlayer: 1, Order: domain.OrderRoundRobin},
+	}
+	a := humanTable(t, sc, ActorConfig{
+		FloorTimeout: 2 * time.Second,
+		AgentTimeout: 2 * time.Second,
+		DiscussIdle:  300 * time.Millisecond,
+	})
+	waitFor(t, 5*time.Second, func() bool {
+		st, ok := a.StateForSeat("seat1")
+		return ok && st.Visible.Phase.Type == domain.PhaseOpening
+	})
+	mustHandle(t, a, "seat1", ClientMessage{Type: "host.skip"})
+	for passed := 0; passed < 3; passed++ {
+		holder := ""
+		waitFor(t, 5*time.Second, func() bool {
+			for _, id := range []string{"seat1", "seat2", "seat3"} {
+				st, ok := a.StateForSeat(id)
+				if ok && st.Floor != nil && st.Floor.SeatID == id {
+					holder = id
+					return true
+				}
+			}
+			return false
+		})
+		mustHandle(t, a, holder, ClientMessage{Type: "speak.pass"})
+		waitFor(t, 5*time.Second, func() bool {
+			st, _ := a.StateForSeat(holder)
+			return st.Floor == nil || st.Floor.SeatID != holder
+		})
+	}
+	waitFor(t, 5*time.Second, func() bool {
+		st, ok := a.StateForSeat("seat1")
+		return ok && st.TalkOpen
+	})
+
+	time.Sleep(200 * time.Millisecond)
+	mustHandle(t, a, "seat1", ClientMessage{Type: "whisper.send", To: "seat2", Text: "只问你一句。"})
+	// Past the original deadline, inside the restarted one.
+	time.Sleep(250 * time.Millisecond)
+	if snap := a.Snapshot(); snap.PhaseIndex != 1 {
+		t.Fatalf("a whisper did not keep the private round open: phase=%d", snap.PhaseIndex)
+	}
+	time.Sleep(700 * time.Millisecond)
+	if snap := a.Snapshot(); snap.PhaseIndex != 2 {
+		t.Fatalf("idle timer did not close the round after the whisper window: phase=%d", snap.PhaseIndex)
+	}
+}
+
 // The answer to a line goes to the front of the queue: the seat that was
 // addressed holds the floor next, before the seats that were already waiting.
 func TestReplyMovesTheAnsweredSeatToTheFront(t *testing.T) {

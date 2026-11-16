@@ -10,7 +10,7 @@ import { ReadingPage } from './ReadingPage'
 import { CardTable } from './CardTable'
 import { narrationFor, probeVoices, speak, stopSpeaking, warmVoices, type VoiceCapabilities } from '../../voice'
 import { useVoiceCapabilities } from '../../lib/useVoice'
-import type { DiceView, GameEvent, SeatState, SpeechSlot, TurnOption, TurnPrompt, Visible } from '../../types/schema'
+import type { DiceView, GameEvent, SearchOption, SeatState, SpeechSlot, TurnOption, TurnPrompt, Visible } from '../../types/schema'
 
 /** A transcript line with an inline picture is rendered as script prose. */
 const MARKDOWN_IMAGE = /!\[[^\]]*\]\([^)\s]+\)/
@@ -198,7 +198,14 @@ export function GamePage({ code }: { code: string }) {
   )
 
   // Leaving the discussion must not leave the box in private mode: the next
-  // phase would send frames the engine rejects.
+  // phase would send frames the engine rejects. A phase change clears it too,
+  // even between two discussion rounds: a leftover whisper target silently
+  // turns the next public line into a private one and the seat loses its turn.
+  const phaseId = phase?.id ?? ''
+  useEffect(() => {
+    setWhisperTo('')
+    setReplyTo('')
+  }, [phaseId])
   useEffect(() => {
     if (!canWhisper && whisperTo) setWhisperTo('')
   }, [canWhisper, whisperTo])
@@ -246,8 +253,10 @@ export function GamePage({ code }: { code: string }) {
     <div className="grid gap-4 xl:grid-cols-[300px_minmax(0,1fr)_280px]">
       <RolePanel
         visible={state.visible}
+        claimable={state.claimable}
         onReveal={(clueId) => send({ type: 'clue.reveal', clueId })}
         onRead={() => setReading(true)}
+        onClaim={(clueId) => send({ type: 'search.clue', clueId })}
       />
 
       {/* On a phone the table comes first and the side panels follow it, so the
@@ -260,10 +269,11 @@ export function GamePage({ code }: { code: string }) {
               {phase?.name || '等待开始'} {phase?.round ? `· 第 ${phase.round} 轮` : ''}
             </Tag>
             {isSpectator ? <Tag tone="amber">观战中</Tag> : null}
-            {floorMine ? <Tag tone="green">{state.floor?.kind === 'reply' ? '轮到你回应' : '轮到你发言'}</Tag> : null}
+            {floorMine ? <Tag tone="green">{floorLabel(state.floor?.kind)}</Tag> : null}
+            {floorMine ? <FloorTimer expiresAt={state.floor?.expiresAt} /> : null}
             {state.order.length > 0 && !floorMine ? <Tag>{orderLabel(phase?.order)}</Tag> : null}
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center justify-end gap-2">
             <StatusDot state={conn} />
             {state.visible.ownRole ? (
               <button type="button" className="btn-ghost text-xs" onClick={() => setReading(true)}>
@@ -287,7 +297,16 @@ export function GamePage({ code }: { code: string }) {
             >
               {voiceLabel(voice, tts)}
             </button>
-           {isHost && state.status === 'running' ? (
+            {isHost && state.status === 'running' && state.visible.phase.type !== 'reveal' ? (
+              <button
+                type="button"
+                className="btn-ghost text-xs"
+                onClick={() => send({ type: 'host.skip', phaseId: state.visible.phase.id })}
+              >
+                进入下一阶段
+              </button>
+            ) : null}
+            {isHost && state.status === 'running' ? (
               <button
                 type="button"
                 className="btn-ghost text-xs text-rose-300 hover:text-rose-200"
@@ -323,7 +342,11 @@ export function GamePage({ code }: { code: string }) {
           lines={lines}
           selfSeatId={seatId}
           onReply={isSpectator ? undefined : (id) => setReplyTo(id === replyTo ? '' : id)}
-          onAdvance={isHost && state.status === 'running' ? () => send({ type: 'host.skip', phaseId: state.visible.phase.id }) : undefined}
+          onAdvance={
+            isHost && state.status === 'running' && state.visible.phase.type !== 'reveal'
+              ? () => send({ type: 'host.skip', phaseId: state.visible.phase.id })
+              : undefined
+          }
         />
 
         {state.status === 'finished' ? (
@@ -342,9 +365,13 @@ export function GamePage({ code }: { code: string }) {
           </div>
         ) : null}
 
-        {state.status === 'running' && state.prompt?.kind === 'order' ? (
+        {state.status === 'running' && (state.prompt?.kind === 'order' || state.prompt?.kind === 'order_confirm') ? (
           <div className="mt-3 border-t border-line/60 pt-3">
-            <OrderPanel prompt={state.prompt} send={send} />
+            {state.prompt.kind === 'order_confirm' ? (
+              <OrderConfirmPanel prompt={state.prompt} send={send} />
+            ) : (
+              <OrderPanel prompt={state.prompt} send={send} />
+            )}
           </div>
         ) : null}
 
@@ -387,7 +414,7 @@ export function GamePage({ code }: { code: string }) {
             {canWhisper ? (
               <div className="flex flex-wrap items-center gap-2 text-xs">
                 <label htmlFor="whisper-to" className="text-slate-500">
-                  私聊对象
+                  发送给
                 </label>
                 <select
                   id="whisper-to"
@@ -395,10 +422,10 @@ export function GamePage({ code }: { code: string }) {
                   value={whisperTo}
                   onChange={(e) => setWhisperTo(e.target.value)}
                 >
-                  <option value="">说给所有人</option>
+                  <option value="">所有人（公开）</option>
                   {whisperTargets.map((s) => (
                     <option key={s.id} value={s.id}>
-                      只对 {s.roleName || s.displayName} 说
+                      只对 {s.roleName || s.displayName}（私聊）
                     </option>
                   ))}
                 </select>
@@ -483,9 +510,16 @@ export function GamePage({ code }: { code: string }) {
           <ul className="space-y-1 text-xs">
             {(state.visible.seats ?? []).map((s) => (
               <li key={s.id} className="flex items-center justify-between rounded-lg px-2 py-1">
-                <span className={s.id === seatId ? 'text-accent' : 'text-slate-300'}>
-                  {s.roleName || s.displayName}
-                  {s.id === seatId ? '（我）' : ''}
+                <span className="min-w-0">
+                  <span className={s.id === seatId ? 'text-accent' : 'text-slate-300'}>
+                    {s.roleName || s.displayName}
+                    {s.id === seatId ? '（我）' : ''}
+                  </span>
+                  {s.items.length > 0 ? (
+                    <span className="mt-0.5 block truncate text-[10px] text-slate-500" title={s.items.join('、')}>
+                      持有：{s.items.join('、')}
+                    </span>
+                  ) : null}
                 </span>
                 <span className="flex items-center gap-2 text-slate-500">
                   {state.pointsLabel && state.tablePoints?.[s.id] !== undefined ? (
@@ -521,6 +555,11 @@ export function GamePage({ code }: { code: string }) {
           role={state.visible.ownRole}
           storageKey={`script-play.reading.${state.visible.gameId}:${seatId || 'viewer'}`}
           onClose={() => setReading(false)}
+          onAdvance={
+            isHost && state.status === 'running' && state.visible.phase.type !== 'reveal'
+              ? () => send({ type: 'host.skip', phaseId: state.visible.phase.id })
+              : undefined
+          }
         />
       ) : null}
     </div>
@@ -1053,10 +1092,16 @@ function PhaseActions({
 
   if (phase?.type === 'vote') {
     const spectator = state.visible.self.kind === 'spectator'
+    const voters = (state.visible.seats ?? []).filter((s) => s.kind !== 'spectator').length
+    const allVoted = state.voted && voters > 0 && state.voteCount >= voters
     return (
       <div className="rounded-xl border border-rose-500/30 bg-rose-500/5 p-3">
         <p className="mb-2 text-xs text-rose-200">
-          {state.voted ? '你已投票，等待其他玩家…' : '投票阶段：选出你认为的凶手，只能投一次'}
+          {state.voted
+            ? allVoted
+              ? '投票已齐，等待主持人进入下一阶段'
+              : '你已投票，等待其他玩家…'
+            : '投票阶段：选出你认为的凶手，只能投一次'}
         </p>
         {!state.voted && !spectator ? (
           <div className="space-y-2">
@@ -1174,7 +1219,22 @@ function PhaseActions({
   }
 
   if (phase?.type === 'reveal') {
-    return <p className="text-xs text-slate-500">由主持人推进，你可以继续补充发言。</p>
+    // The truth arrives as a public event, but it is appended under a long
+    // transcript; repeat the newest one here so the table does not have to hunt
+    // for it before ending the game.
+    const revealLine = [...state.visible.transcript].reverse().find((l) => l.kind === 'reveal')
+    return (
+      <div className="rounded-xl border border-amber-400/30 bg-amber-400/5 p-3">
+        <p className="text-xs text-slate-400">
+          真相已揭晓。主持人点右上角「结束对局」后，复盘即可打开。
+        </p>
+        {revealLine?.text ? (
+          <p className="scroll-thin mt-2 max-h-64 overflow-y-auto whitespace-pre-wrap text-sm leading-relaxed text-slate-200">
+            {revealLine.text}
+          </p>
+        ) : null}
+      </div>
+    )
   }
 
   return null
@@ -1312,14 +1372,48 @@ function OrderPanel({
   )
 }
 
+/**
+ * Confirmation of an agent captain's layout. The order belongs to the captain;
+ * the host only approves it so the search phase can start.
+ */
+function OrderConfirmPanel({
+  prompt,
+  send,
+}: {
+  prompt: TurnPrompt
+  send: (cmd: { type: string }) => boolean
+}) {
+  const seats = prompt.seats
+  return (
+    <div className="rounded-xl border border-amber-500/40 bg-amber-500/5 p-3">
+      <p className="mb-2 text-xs text-amber-100">{prompt.text || '船长已指定顺序，请确认。'}</p>
+      <p className="mb-3 text-sm text-slate-200">
+        {seats.length > 0 ? seats.map((s, i) => `${i + 1}. ${s.role || s.display}`).join(' → ') : '还没有可用顺序'}
+      </p>
+      <button
+        type="button"
+        className="btn-primary text-xs"
+        disabled={seats.length === 0}
+        onClick={() => send({ type: 'order.confirm' })}
+      >
+        确认顺序，开始搜证
+      </button>
+    </div>
+  )
+}
+
 function RolePanel({
   visible,
+  claimable,
   onReveal,
   onRead,
+  onClaim,
 }: {
   visible: Visible
+  claimable: SearchOption[]
   onReveal: (clueId: string) => void
   onRead: () => void
+  onClaim: (clueId: string) => void
 }) {
   const role = visible.ownRole
   return (
@@ -1370,6 +1464,25 @@ function RolePanel({
 
       <div className="sheet">
         <SectionTitle>我的线索</SectionTitle>
+        {/* Deep-dive cards unlocked by a clue already in hand survive the end of
+            the search round, so their claim buttons get a permanent home. */}
+        {claimable.length > 0 ? (
+          <div className="mb-3 rounded-xl border border-amber-500/40 bg-amber-500/5 px-3 py-2">
+            <p className="text-xs text-amber-200">手里线索指向的深入调查（不占搜证次数）</p>
+            <div className="mt-1 flex flex-wrap gap-1.5">
+              {claimable.map((o) => (
+                <button
+                  key={o.id}
+                  type="button"
+                  className="btn-ghost text-[11px]"
+                  onClick={() => onClaim(o.id)}
+                >
+                  {o.hint || '深入调查'}
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : null}
         {/* Items come from the cards this seat has already picked up. They are
             the keys to the deep-dive clues, so they sit above the list. */}
         {visible.items.length > 0 ? (
@@ -1494,6 +1607,29 @@ function voiceLabel(caps: VoiceCapabilities, on: boolean): string {
   if (caps.mandarinVoices > 0) return on ? '🔊 朗读开' : '🔈 朗读关'
   if (caps.fallback) return on ? '🔊 系统音色' : '🔈 朗读关'
   return '🔇 无音色'
+}
+
+function floorLabel(kind?: string): string {
+  if (kind === 'reply') return '轮到你回应'
+  if (kind === 'search') return '轮到你搜证'
+  if (kind === 'vote') return '轮到你投票'
+  return '轮到你发言'
+}
+
+/** Live countdown of the seat's floor. A connected player keeps the turn after
+ *  zero, so the last state is a wait notice, not a failure. */
+function FloorTimer({ expiresAt }: { expiresAt?: string }) {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1000)
+    return () => window.clearInterval(timer)
+  }, [])
+  if (!expiresAt) return null
+  const ms = new Date(expiresAt).getTime()
+  if (!Number.isFinite(ms)) return null
+  const left = Math.ceil((ms - now) / 1000)
+  if (left <= 0) return <span className="text-xs text-slate-400">等待你操作</span>
+  return <span className={left <= 10 ? 'text-xs text-warm' : 'text-xs text-slate-400'}>剩 {left} 秒</span>
 }
 
 function roleNameOf(visible: Visible, roleId: string): string {

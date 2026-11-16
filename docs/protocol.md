@@ -130,7 +130,7 @@ Content-Type: application/json
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/api/rooms` | 我可见的房间（大厅全量 + 我参与的对局） |
-| POST | `/api/rooms` | `{name?, scriptId, maxSeats?, allowSpectator?, speechSeconds?, autoSkip?}` → `{room}`，创建者为房主并自动占座；`maxSeats` 留空取剧本 `playerCount.max`，人数固定（min=max）时必须等于该值，可浮动时只能落在 min~max 内，否则 400；`speechSeconds` 为 10~600（单次轮次的秒数）、0（服务端默认，见 `/api/health` 的 `floorTimeoutSec`）或 -1（不限时）；计时按「每次轮到某个座位」重新开始，搜证与投票的等待也用同一个值；`autoSkip=false` 表示超时不跳过、等主持人推进（`-1` 不产生超时，此项无意义） |
+| POST | `/api/rooms` | `{name?, scriptId, maxSeats?, allowSpectator?, speechSeconds?, autoSkip?}` → `{room}`，创建者为房主并自动占座；`maxSeats` 留空取剧本 `playerCount.max`，人数固定（min=max）时必须等于该值，可浮动时只能落在 min~max 内，否则 400；`speechSeconds` 为 10~600（单次轮次的秒数）、0（服务端默认，见 `/api/health` 的 `floorTimeoutSec`）或 -1（不限时）；计时按「每次轮到某个座位」重新开始，搜证与投票的等待也用同一个值并占用 `floor.kind=search|vote`，但持有活动连接的真人到点只收到「仍在等待你的操作」提示、不扣搜证次数也不改弃权；掉线座位才按离线跳过；`autoSkip=false` 表示发言超时不跳过、等主持人推进（`-1` 不产生超时，此项无意义） |
 | GET | `/api/rooms/{code}` | `{room}` |
 | POST | `/api/rooms/{code}/join` | `{displayName?, roleId?, spectator?}`；已有座位则 `rejoined: true`；对局已开始时只能以 `spectator` 身份加入（需 `allowSpectator`）。真人座位不设性格 |
 | POST | `/api/rooms/{code}/seats` | 房主添加 AI 座位 `{roleId?, personaId?, displayName?}`；`personaId` 缺省或传 `random` 时服务端抽一个预设并落库为具体 id；`modelId` 仍可传（留空用服务端默认），但 Web 界面不再暴露模型选择 |
@@ -218,6 +218,7 @@ Content-Type: application/json
 { "type": "dice.ask", "text": "你见过那条项链吗？" }  // 点数最大的人选问题卡提问；也可以直接发 speak.text
 { "type": "dice.answer", "text": "……" }        // 被提问的人回答；也可以直接发 speak.text
 { "type": "order.set", "seatIds": ["seat_a", "seat_b"] }  // 定序：必须是本阶段可行动角色的一个排列（主持人或 order=role_assigned 指定的角色）
+{ "type": "order.confirm" }                       // AI 船长已给出顺序时，主持人确认该顺序（不能改用 order.set 重排）
 { "type": "host.skip" }   // 进入下一阶段（帧名保留旧名）：UI 写「进入下一阶段：X」，落盘一条主持人的 dm
 { "type": "ping" }
 ```
@@ -234,6 +235,9 @@ Content-Type: application/json
 `seatIds` 少一个或多一个都属于非法命令，以 `error` 帧回写并继续等。阶段带 `onlyRoleIds` 时，
 「可行动角色」就是名单里的那些人（如 K5 的三轮搜证只排五位巫师，黑猫不占回合），
 主持人面板列出的也正是这些座位，座位状态里不会给名单外的角色发抽卡按钮或剩余次数。
+`role_assigned` 指定的角色由 AI 扮演时，引擎会先替该角色生成一份顺序，座位状态给主持人的
+`prompt.kind` 为 `order_confirm`；主持人只能发 `order.confirm` 让搜证开始，发 `order.set`
+会被拒绝，避免排序权从船长手里转给主持人。
 搜证阶段的 `searchMode` 同是剧本字段：`pick` 给列表由玩家选，`random` 不给列表，
 玩家只能发 `search.draw`，服务端在「仍可搜」的池里均匀抽一条（越权用 `search.clue` 会被拒）。
 「仍可搜」已经扣掉三类卡：`subjectRoleId` 是本座位自己的搜身线索、`requiresItems` 没拿齐、
@@ -282,6 +286,10 @@ Content-Type: application/json
   提问方、回答方和问题正文。阶段走完 `dice.rounds` 轮后由主持人进入下一阶段。
 - 阶段写 `order: "fixed"` 时顺序完全照 `phase.orderRoleIds` 走，不洗牌也不等主持人；
   写进名单的座位若不在房间里属于剧本错误，校验闸门会拒。
+- 讨论阶段写 `whisper: true` 时是私聊回合（K10 第一轮私聊）：发言位、超时与空闲提示改用
+  「私下交谈/私聊」，AI 的回合提示要求优先用 `whisper` 找一个人私下问。该阶段的空闲计时
+  下限为 5 分钟（不会缩短更长的 `discussionIdleSec`），且任何 `whisper` 写入都会重启空闲
+  窗口，避免两人还在私聊时被「无人发言」整段推进。
 - `role.skill` 是一局一次的特殊技能，`skill.use` 在**任意搜证阶段**都能发（不必轮到自己，也不占回合），
   `SeatState.skill` 会带上 `ready`/`why` 让客户端知道现在能不能按。四种 `effect`：
   `steal_draws`（夺走目标本轮剩余抽卡权，`target: "next"` 取本轮顺序里的下一位）、
@@ -376,15 +384,16 @@ Content-Type: application/json
     "items": ["钳子", "手电筒"],                       // 本座位物品栏（grantsItem 授予）
     "transcript": [{ "seq", "kind", "seatId", "roleId", "speaker", "text", "at" }],
     "truth": Truth,                                     // 仅 reveal 阶段 + 主持人视图
-    "seats": [PublicSeat]
+    "seats": [PublicSeat]                               // 含每人的物品名（items），不含线索正文
   },
   "phases": [{ "id", "name", "type", "round", "status": "pending|current|done" }],
-  "floor": { "seatId", "phaseId", "expiresAt" },      // 发言与搜证轮次都会占用
+  "floor": { "seatId", "phaseId", "kind": "speech|reply|search|vote", "expiresAt" }, // 当前轮次与倒计时
   "status": "lobby|running|finished",
   "voteCount": 2,
   "votes": { "r3": 2 },                                // 仅观战/主持人
   "personas": { "seat_...": "谨慎型" },                 // seatId → 性格名（不含模型）
   "search": [{ "id", "hint" }],                      // 自选搜证：只给卡背面的字（地点＋编号），不含 title/content
+  "claimable": [{ "id": "k10-j01", "hint": "…", "granted": true }], // 手里线索指向的深入调查卡；搜证/讨论阶段都可领取
   "draw": 2,                                          // 随机搜证：本座位还剩几次抽取
   "order": ["seat_a", "seat_b"],                       // 本阶段顺序（seatId 数组）
   "prompt": {                                          // 仅主持人：引擎正在等他做什么
@@ -407,7 +416,15 @@ Content-Type: application/json
 
 `visible` 中**不存在**的字段就是该座位拿不到的信息：`truth`、他人的 `private`、未公开线索、
 其他座位的 `personaId` / `modelId` 都在结构层面被排除。带 `keywords` 的私人物品（记忆碎片）
-在关键词被说出之前，连它的持有者在 `ownClues` 里也看不到；`visible.items` 只含本座位的物品。
+在关键词被说出之前，连它的持有者在 `ownClues` 里也看不到；`visible.items` 只含本座位的物品，
+而 `visible.seats[].items` 是**公开的物品名**（不含线索正文），用于桌上询问「钥匙在谁手里」，
+AI 提示词也会带上这份公开清单。
+
+`claimable` 不受搜证阶段限制：`search.clue` 在 `search` 与 `discussion` 阶段都接受已解锁的
+`granted` 卡，每次下发 state 时按当前物品栏重算；需要借用他人持有的物品时，`hint` 会点名
+「与××共同开启」，卡片归底卡持有人，合作方另收到一条带全文的私密 `system` 事件。
+投票题面来自阶段字段 `votePrompt`，投票开始时以本人可见的 `system` 事件下发，缺省时才回落到
+「请选择你认为是凶手的角色」。
 
 ## 7. 信息隔离的保证方式
 

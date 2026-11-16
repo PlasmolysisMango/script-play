@@ -191,7 +191,13 @@ export function ReplayPage({ code }: { code: string }) {
                     <span>#{ev.seq}</span>
                     <span>{style.label}</span>
                     {speaker && speaker !== style.label ? <span className="text-slate-300">{speaker}</span> : null}
-                    {ev.visibility !== 'public' ? <Tag tone="amber">{ev.visibility.startsWith('seat:') ? '私密' : ev.visibility}</Tag> : null}
+                    {ev.visibility !== 'public' ? (
+                      <Tag tone="amber">
+                        {ev.visibility.startsWith('seat:') ? '私密'
+                          : ev.visibility.startsWith('pair:') ? '私聊'
+                          : ev.visibility === 'dm' ? '主持人' : '非公开'}
+                      </Tag>
+                    ) : null}
                   </div>
                   <p className="whitespace-pre-wrap text-slate-300">{ev.text || '（无内容）'}</p>
                 </li>

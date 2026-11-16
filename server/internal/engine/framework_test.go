@@ -417,6 +417,38 @@ func TestGrantedCardStaysClaimableAfterTheTurnEnds(t *testing.T) {
 	}
 }
 
+// 共同开启要把合作者写进按钮：否则玩家看见一张没钥匙也能点的卡，会以为
+// 钥匙门槛失效，而不是「借用了别人的物品」。
+func TestGrantedHintNamesTheCoopPartner(t *testing.T) {
+	sc := frameworkScript()
+	sc.Clues[0].GrantsClue = []string{"c5"}
+	sc.Clues = append(sc.Clues, domain.Clue{
+		ID: "c5", Title: "曲径通幽 5", Content: "钳子拧开暗门。",
+		RequiresItems: []string{"钳子"}, UnlockedBy: []string{"c1"},
+	})
+	sc.Phases[1].CluePool = []string{"c1"}
+	g := domain.NewGame("g1", "room1", "sc1", []domain.Seat{
+		{ID: "seat1", RoomID: "room1", RoleID: "r1", Kind: domain.SeatHuman, DisplayName: "玩家一"},
+		{ID: "seat2", RoomID: "room1", RoleID: "r2", Kind: domain.SeatHuman, DisplayName: "玩家二"},
+		{ID: "seat3", RoomID: "room1", RoleID: "r3", Kind: domain.SeatHuman, DisplayName: "玩家三"},
+	})
+	g.Status = domain.RoomRunning
+	g.PhaseIndex = 1
+	g.ClueState["c1"] = domain.ClueState{ClueID: "c1", FoundBySeat: "seat1"}
+	g.GrantItem("seat2", "钳子")
+	a := NewActor(g, sc, nil, nil, nil, ActorConfig{})
+
+	for _, o := range a.grantedOptionsLocked(g.Seats[0], &sc.Phases[1]) {
+		if o.ID == "c5" {
+			if !strings.Contains(o.Hint, "乙") || !strings.Contains(o.Hint, "共同开启") {
+				t.Fatalf("共同开启的按钮没有点名合作者: %q", o.Hint)
+			}
+			return
+		}
+	}
+	t.Fatal("合作者持有物品时，深入调查卡没有摆到主人面前")
+}
+
 // K6 的「当前两个阶段都已解锁」：记忆碎片可以串成一条链。
 func TestKeywordChainWaitsForTheEarlierPages(t *testing.T) {
 	sc := frameworkScript()

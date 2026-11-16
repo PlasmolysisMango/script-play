@@ -128,7 +128,7 @@ export function RoomPage({ code }: { code: string }) {
                 剧本：{room.scriptTitle || '未知'} · {players.length}/{room.maxSeats} 座 ·{' '}
                 {room.allowSpectator ? '允许观战' : '禁止观战'} · 发言限时{' '}
                 {speechLimitLabel(room.speechSeconds)}
-                {isUnlimitedSpeech(room.speechSeconds) ? '' : `（${room.autoSkip ? '超时自动跳过' : '等主持人推进'}）`}
+                {isUnlimitedSpeech(room.speechSeconds) ? '' : `（${room.autoSkip ? '发言超时自动跳过' : '等主持人推进'}）`}
               </p>
             </div>
             {/* Status, host badge and copy used to be three stacked rows on a
@@ -175,7 +175,7 @@ export function RoomPage({ code }: { code: string }) {
               ) : null}
               {room.status === 'finished' && room.host ? (
                 <button type="button" className="btn-ghost text-xs" onClick={() => navigate('replay', code)}>
-                  查看复盘
+                  查看复盘与真相
                 </button>
               ) : null}
             </div>
@@ -415,7 +415,13 @@ function SeatCard({
           <select
             className="input text-xs"
             value={seat.roleId}
-            onChange={(e) => onPatch({ roleId: e.target.value })}
+            onChange={(e) => {
+              const roleId = e.target.value
+              const roleName = room.roles.find((r) => r.id === roleId)?.name
+              // An AI's label is derived from the role it was added as; re-derive
+              // it on a role change so the card cannot name two different people.
+              onPatch(seat.kind === 'agent' && roleName ? { roleId, displayName: `AI·${roleName}` } : { roleId })
+            }}
             aria-label="角色"
           >
             <option value="">（开局自动分配）</option>

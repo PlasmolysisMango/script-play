@@ -45,7 +45,7 @@ func humanActor(t *testing.T, floor time.Duration, waitForHost, unlimited bool) 
 func TestSpeechTimeoutSkipsByDefault(t *testing.T) {
 	a := humanActor(t, 150*time.Millisecond, false, false)
 	waitFor(t, 5*time.Second, func() bool {
-		return hasSystemEvent(a.Snapshot(), "seat1", "未在时限内发言，跳过")
+		return hasSystemEvent(a.Snapshot(), "seat1", "未在时限内公开发言，跳过")
 	})
 }
 
@@ -66,7 +66,7 @@ func TestSpeechTimeoutWaitsForHost(t *testing.T) {
 		t.Fatalf("phase moved on without the host: index %d", snap.PhaseIndex)
 	}
 	for _, ev := range snap.Events {
-		if strings.Contains(ev.Text, "未在时限内发言") {
+		if strings.Contains(ev.Text, "未在时限内公开发言") {
 			t.Fatalf("seat was skipped even though the room waits for the host: %q", ev.Text)
 		}
 	}
@@ -108,7 +108,7 @@ func TestUnlimitedFloorNeverTimesOut(t *testing.T) {
 		return hasSystemEvent(a.Snapshot(), "seat1", "轮到你发言（不限时）")
 	})
 	time.Sleep(400 * time.Millisecond)
-	assertNoEvent(t, a.Snapshot(), "未在时限内发言")
+	assertNoEvent(t, a.Snapshot(), "未在时限内公开发言")
 
 	if err := a.Handle(context.Background(), "seat1", ClientMessage{Type: "speak.text", Text: "我先说说自己昨晚的行踪"}); err != nil {
 		t.Fatalf("speech in unlimited room: %v", err)
@@ -304,5 +304,79 @@ func assertNoEvent(t *testing.T, g domain.Game, needle string) {
 		if strings.Contains(ev.Text, needle) {
 			t.Fatalf("unexpected event from an unlimited room: %q", ev.Text)
 		}
+	}
+}
+
+// A connected human who is still reading must not lose search picks to the
+// per-turn clock. The QA run opened the newly unlocked role book during the
+// third search and four of six draws were skipped behind the overlay.
+func TestConnectedHumanSearchKeepsQuotaAfterDeadline(t *testing.T) {
+	sc := fixtureScript()
+	g := fixtureGame()
+	g.PhaseIndex = 1 // search
+	seat := *g.SeatByID("seat1")
+	a := NewActor(g, sc, nil, nil, nil, ActorConfig{
+		FloorTimeout: 100 * time.Millisecond,
+		AgentTimeout: time.Second,
+		Presence:     func(string) bool { return true },
+	})
+
+	done := make(chan bool, 1)
+	go func() { done <- a.awaitSearch(context.Background(), a.phaseGen, seat, &sc.Phases[1]) }()
+	waitFor(t, 2*time.Second, func() bool {
+		return hasSystemEvent(a.Snapshot(), "seat1", "搜证计时结束")
+	})
+
+	a.mu.Lock()
+	used := a.searched["seat1"]
+	ch := a.waiters["seat1"]
+	a.mu.Unlock()
+	if used != 0 {
+		t.Fatalf("connected human lost a pick to the clock: searched=%d", used)
+	}
+
+	ch <- ClientMessage{Type: "host.skip"}
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("search waiter did not stop after host skip")
+	}
+}
+
+// The vote clock must never turn a connected human's untouched ballot into an
+// abstention while they are writing their reasoning down.
+func TestConnectedHumanVoteKeepsBallotAfterDeadline(t *testing.T) {
+	sc := fixtureScript()
+	g := fixtureGame()
+	g.PhaseIndex = 3 // vote
+	seat := *g.SeatByID("seat1")
+	a := NewActor(g, sc, nil, nil, nil, ActorConfig{
+		FloorTimeout: 100 * time.Millisecond,
+		AgentTimeout: time.Second,
+		Presence:     func(string) bool { return true },
+	})
+
+	done := make(chan bool, 1)
+	go func() { done <- a.awaitVote(context.Background(), a.phaseGen, seat) }()
+	waitFor(t, 2*time.Second, func() bool {
+		return hasSystemEvent(a.Snapshot(), "seat1", "投票计时结束")
+	})
+
+	a.mu.Lock()
+	voted := a.g.Votes["seat1"]
+	ch := a.waiters["seat1"]
+	a.mu.Unlock()
+	if voted != "" {
+		t.Fatalf("connected human was made to abstain: votes=%+v", a.Snapshot().Votes)
+	}
+
+	ch <- ClientMessage{Type: "vote.cast", RoleID: "r3"}
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("vote waiter did not stop after the ballot")
+	}
+	if got := a.Snapshot().Votes["seat1"]; got != "r3" {
+		t.Fatalf("ballot not recorded: %q", got)
 	}
 }

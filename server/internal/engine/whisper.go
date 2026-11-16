@@ -73,6 +73,9 @@ func (a *Actor) whisperLocked(from, to domain.Seat, ph *domain.Phase, text strin
 		},
 	})
 	a.persistLocked()
+	// Whispers are the speech of a private round: wake the idle timer so a
+	// quiet table does not close the phase while two people are still talking.
+	a.wakeTalk()
 }
 
 // replyWhisper asks an AI seat to answer one private line. It is single-flight
